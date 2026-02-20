@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "veripak"
+version = "0.1.0"
+description = "CLI tool for auditing open-source packages: version, CVEs, downloads, and replacement validation"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+keywords = ["packages", "audit", "security", "cve", "dependencies"]
+dependencies = [
+    "click>=8.0",
+    "litellm>=1.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "pytest-cov"]
+
+[project.scripts]
+veripak = "veripak.cli:main"
+vpk = "veripak.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/veripak"]
