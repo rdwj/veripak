@@ -196,7 +196,7 @@ def _nvd_rate_limit(api_key: str) -> None:
 
 def _nvd_fetch(keyword: str, api_key: str) -> list[dict]:
     url = (
-        f"{_NVD_BASE}?keywordSearch={urllib.parse.quote(keyword)}&resultsPerPage=20"
+        f"{_NVD_BASE}?keywordSearch={urllib.parse.quote(keyword)}&resultsPerPage=100"
     )
     extra = {"apiKey": api_key} if api_key else {}
     for attempt in range(_NVD_MAX_RETRIES):
