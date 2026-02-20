@@ -1,14 +1,11 @@
 """veripak CLI entry point."""
 
-import datetime
 import json
-import sys
-from typing import Optional
 
 import click
 
 from . import __version__, config
-from .checkers import cves, downloads, replacements, versions
+from .agent import PackageCheckAgent
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +89,10 @@ def cmd_config() -> None:
     help="Comma-separated versions in use for CVE matching (e.g. 2.14.0,2.15.0)",
 )
 @click.option("--replacement", "-r", default="", help="Name of the replacement package to validate")
+@click.option("--release-notes-url", default="", help="URL of the release notes page")
+@click.option("--repository-url", default="", help="Source repository URL")
+@click.option("--homepage", default="", help="Project homepage URL")
+@click.option("--download-url", default="", help="Known download URL")
 @click.option("--json", "output_json", is_flag=True, help="Output machine-readable JSON")
 @click.option("--no-cves", is_flag=True, help="Skip CVE check")
 @click.option("--no-download", is_flag=True, help="Skip download validation")
@@ -100,70 +101,42 @@ def cmd_check(
     ecosystem: str,
     version_list: str,
     replacement: str,
+    release_notes_url: str,
+    repository_url: str,
+    homepage: str,
+    download_url: str,
     output_json: bool,
     no_cves: bool,
     no_download: bool,
 ) -> None:
     """Audit PACKAGE in ECOSYSTEM."""
-    checked_at = datetime.datetime.utcnow().isoformat() + "Z"
-    parsed_versions = [v.strip() for v in version_list.split(",") if v.strip()]
-
-    # --- Version ---
-    version_result = versions.get_latest_version(package, ecosystem)
-    latest_stable = version_result.get("version")
-
-    # --- Download ---
-    download_result: Optional[dict] = None
-    if not no_download:
-        download_url = ""  # CLI doesn't accept download_url; rely on ecosystem logic
-        download_result = downloads.check_download(
-            name=package,
-            ecosystem=ecosystem,
-            version=latest_stable or (parsed_versions[0] if parsed_versions else ""),
-            download_url=download_url,
-        )
-
-    # --- CVEs ---
-    cve_result: Optional[dict] = None
-    if not no_cves:
-        cve_result = cves.check_cves(
-            name=package,
-            ecosystem=ecosystem,
-            versions=parsed_versions,
-            latest_version=latest_stable or "",
-            replacement_name=replacement,
-        )
-
-    # --- Replacement ---
-    replacement_result: Optional[dict] = None
-    if replacement:
-        replacement_result = replacements.check_replacement(
-            replacement_name=replacement,
-            ecosystem=ecosystem,
-        )
-
-    # --- Output ---
-    result = {
-        "package": package,
-        "ecosystem": ecosystem,
-        "checked_at": checked_at,
-        "version": {
-            "latest_stable": latest_stable,
-            "method": version_result.get("method"),
-            "source_url": version_result.get("source_url"),
-            "proof": version_result.get("proof"),
-            "notes": version_result.get("notes"),
-        },
-        "download": download_result,
-        "cves": cve_result,
-        "replacement": replacement_result,
-    }
+    agent = PackageCheckAgent()
+    result = agent.run(
+        package=package,
+        ecosystem=ecosystem,
+        versions_in_use=[v.strip() for v in version_list.split(",") if v.strip()],
+        replacement_name=replacement or None,
+        homepage=homepage or None,
+        release_notes_url=release_notes_url or None,
+        repository_url=repository_url or None,
+        download_url=download_url or None,
+        skip_cves=no_cves,
+        skip_download=no_download,
+    )
 
     if output_json:
         click.echo(json.dumps(result, indent=2))
         return
 
     # Human-readable output
+    version_result = result.get("version") or {}
+    download_result = result.get("download")
+    cve_result = result.get("cves")
+    replacement_result = result.get("replacement")
+    agent_meta = result.get("_agent", {})
+
+    latest_stable = version_result.get("version")
+
     click.echo()
     click.echo(f"  Package:     {package}  ({ecosystem})")
 
@@ -175,7 +148,10 @@ def cmd_check(
     if download_result is not None:
         dl_confirmed = download_result.get("confirmed")
         dl_method = download_result.get("method", "")
-        if dl_confirmed is True:
+        if dl_method == "skipped":
+            dl_notes = download_result.get("notes") or "skipped"
+            dl_str = f"skipped: {dl_notes}"
+        elif dl_confirmed is True:
             dl_str = f"confirmed  [{dl_method}]"
         elif dl_confirmed is False:
             dl_notes = download_result.get("notes") or "failed"
@@ -205,5 +181,11 @@ def cmd_check(
         click.echo(f"  Replacement: {replacement}  {r_str}")
     else:
         click.echo("  Replacement: n/a")
+
+    agent_errors = agent_meta.get("errors", [])
+    if agent_errors:
+        click.echo("  Errors:")
+        for err in agent_errors:
+            click.echo(f"    {err}")
 
     click.echo()

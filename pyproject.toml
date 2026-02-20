@@ -13,6 +13,7 @@ keywords = ["packages", "audit", "security", "cve", "dependencies"]
 dependencies = [
     "click>=8.0",
     "litellm>=1.0",
+    "packaging>=23.0",
     "pyyaml>=6.0",
 ]
 

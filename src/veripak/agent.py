@@ -1,0 +1,239 @@
+"""PackageCheckAgent — orchestrates the 5-node audit pipeline with retry logic."""
+
+import datetime
+from dataclasses import dataclass, field
+from typing import Optional
+
+from .checkers import cves, downloads, replacements, versions
+from .checkers import download_discovery
+
+
+@dataclass
+class AgentState:
+    # Inputs
+    package: str
+    ecosystem: str
+    versions_in_use: list[str] = field(default_factory=list)
+    replacement_name: Optional[str] = None
+
+    # URLs (passed in or discovered during run)
+    homepage: Optional[str] = None
+    release_notes_url: Optional[str] = None
+    repository_url: Optional[str] = None
+    download_url: Optional[str] = None
+
+    # Node outputs (None = not yet run)
+    version_result: Optional[dict] = None
+    download_result: Optional[dict] = None
+    cve_result: Optional[dict] = None
+    replacement_result: Optional[dict] = None
+
+    # Control
+    attempts: dict = field(default_factory=dict)   # node_id -> int
+    errors: list[str] = field(default_factory=list)
+    max_attempts: int = 2
+
+
+class PackageCheckAgent:
+    """Orchestrates the veripak audit pipeline with retry loops and link-following."""
+
+    def run(
+        self,
+        package: str,
+        ecosystem: str,
+        versions_in_use: Optional[list[str]] = None,
+        replacement_name: Optional[str] = None,
+        homepage: Optional[str] = None,
+        release_notes_url: Optional[str] = None,
+        repository_url: Optional[str] = None,
+        download_url: Optional[str] = None,
+        skip_cves: bool = False,
+        skip_download: bool = False,
+    ) -> dict:
+        """Run the full audit pipeline and return a consolidated result dict."""
+        state = AgentState(
+            package=package,
+            ecosystem=ecosystem,
+            versions_in_use=versions_in_use or [],
+            replacement_name=replacement_name,
+            homepage=homepage,
+            release_notes_url=release_notes_url,
+            repository_url=repository_url,
+            download_url=download_url,
+        )
+
+        # N1: version lookup
+        self._n1_version(state)
+
+        # N2+N3: download discovery and validation with loop-back.
+        # N2 tries to find a URL (useful for non-programmatic ecosystems).
+        # N3 validates the download; for programmatic ecosystems (python, js)
+        # check_download works without a URL (pip/npm), so we always call N3.
+        if not skip_download:
+            self._n2_discover_download(state)
+            self._n3_validate_download(state)
+            # Loop-back: if validation failed and we have URL discovery to retry
+            if (
+                state.download_result is not None
+                and not state.download_result.get("confirmed", False)
+                and state.download_result.get("method") != "skipped"
+                and self._bump(state, "n2") <= state.max_attempts
+            ):
+                self._n2_discover_download(state)
+                self._n3_validate_download(state)
+
+        # N4: CVE lookup
+        if not skip_cves:
+            self._n4_cves(state)
+
+        # N5: replacement validation
+        if state.replacement_name:
+            self._n5_replacement(state)
+
+        return self._to_result(state)
+
+    # ------------------------------------------------------------------
+    # Node implementations
+    # ------------------------------------------------------------------
+
+    def _n1_version(self, state: AgentState) -> None:
+        """N1: look up the latest version with retry."""
+        node_id = "n1"
+        last_result: Optional[dict] = None
+
+        while self._bump(state, node_id) <= state.max_attempts:
+            try:
+                result = versions.get_latest_version(state.package, state.ecosystem)
+            except Exception as exc:
+                state.errors.append(f"n1 attempt {state.attempts[node_id]}: {exc}")
+                continue
+
+            last_result = result
+            if result.get("version") is not None:
+                state.version_result = result
+                return
+            else:
+                state.errors.append(
+                    f"n1 attempt {state.attempts[node_id]}: version=None"
+                    + (f", notes={result.get('notes')}" if result.get("notes") else "")
+                )
+
+        # Store whatever we got, even if version is None
+        state.version_result = last_result
+
+    def _n2_discover_download(self, state: AgentState) -> None:
+        """N2: discover a download URL using multiple strategies."""
+        node_id = "n2"
+        attempt_count = state.attempts.get(node_id, 0)
+        is_retry = attempt_count > 0
+
+        version = (
+            (state.version_result or {}).get("version")
+            or (state.versions_in_use[0] if state.versions_in_use else None)
+        )
+
+        try:
+            url = download_discovery.discover(
+                name=state.package,
+                ecosystem=state.ecosystem,
+                version=version,
+                release_notes_url=state.release_notes_url,
+                repository_url=state.repository_url,
+                homepage=state.homepage,
+                existing_url=state.download_url,
+                retry=is_retry,
+            )
+        except Exception as exc:
+            state.errors.append(f"n2: {exc}")
+            url = None
+
+        if url:
+            state.download_url = url
+
+    def _n3_validate_download(self, state: AgentState) -> None:
+        """N3: validate the download URL."""
+        version = (
+            (state.version_result or {}).get("version")
+            or (state.versions_in_use[0] if state.versions_in_use else "")
+        )
+
+        try:
+            result = downloads.check_download(
+                name=state.package,
+                ecosystem=state.ecosystem,
+                version=version or "",
+                download_url=state.download_url or "",
+            )
+        except Exception as exc:
+            state.errors.append(f"n3: {exc}")
+            result = {"method": "error", "confirmed": False, "notes": str(exc)}
+
+        state.download_result = result
+
+    def _n4_cves(self, state: AgentState) -> None:
+        """N4: CVE lookup. One attempt; failures return empty result."""
+        latest_version = (state.version_result or {}).get("version") or ""
+
+        try:
+            result = cves.check_cves(
+                name=state.package,
+                ecosystem=state.ecosystem,
+                versions=state.versions_in_use,
+                latest_version=latest_version,
+                replacement_name=state.replacement_name or "",
+            )
+        except Exception as exc:
+            state.errors.append(f"n4: {exc}")
+            result = {
+                "method": "error",
+                "versions_cves": [],
+                "latest_cves": [],
+                "replacement_cves": [],
+                "total_count": 0,
+                "high_critical_count": 0,
+            }
+
+        state.cve_result = result
+
+    def _n5_replacement(self, state: AgentState) -> None:
+        """N5: validate the replacement package."""
+        try:
+            result = replacements.check_replacement(
+                replacement_name=state.replacement_name or "",
+                ecosystem=state.ecosystem,
+            )
+        except Exception as exc:
+            state.errors.append(f"n5: {exc}")
+            result = {
+                "confirmed": None,
+                "method": "error",
+                "notes": str(exc),
+                "proof": None,
+            }
+
+        state.replacement_result = result
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _bump(self, state: AgentState, node_id: str) -> int:
+        """Increment and return the attempt count for a node."""
+        state.attempts[node_id] = state.attempts.get(node_id, 0) + 1
+        return state.attempts[node_id]
+
+    def _to_result(self, state: AgentState) -> dict:
+        """Assemble the final result dict from agent state."""
+        return {
+            "package": state.package,
+            "ecosystem": state.ecosystem,
+            "checked_at": datetime.datetime.utcnow().isoformat() + "Z",
+            "version": state.version_result,
+            "download": state.download_result,
+            "cves": state.cve_result,
+            "replacement": state.replacement_result,
+            "_agent": {
+                "attempts": state.attempts,
+                "errors": state.errors,
+            },
+        }

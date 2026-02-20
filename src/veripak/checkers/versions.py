@@ -239,11 +239,11 @@ def check_via_model(
     label = ECO_LABELS.get(ecosystem, ecosystem)
 
     try:
-        r1 = tavily.search(f"{name} latest version")
+        r1 = tavily.search(f"{name} latest version", max_results=3)
     except RuntimeError:
         r1 = []
     try:
-        r2 = tavily.search(f"{name} release notes")
+        r2 = tavily.search(f"{name} release notes", max_results=3)
     except RuntimeError:
         r2 = []
 
@@ -252,7 +252,7 @@ def check_via_model(
         for r in result_set:
             url = r.get("url", "")
             title = r.get("title", "")
-            content = r.get("content", "")[:500]
+            content = r.get("content", "")[:200]
             snippets.append(f"URL: {url}\nTitle: {title}\nContent: {content}")
 
     if not snippets:
@@ -260,13 +260,10 @@ def check_via_model(
 
     search_text = "\n\n---\n\n".join(snippets)
     prompt = (
-        f'Based on the following search results, identify the latest stable release '
-        f'version of "{name}" ({label}).\n\n'
+        f'What is the latest stable release version of "{name}"?\n\n'
         f"{search_text}\n\n"
-        "Return ONLY a JSON object with no markdown fences or other text: "
-        '{"version": "X.Y.Z", "source_url": "https://...", '
-        '"proof": "verbatim text from the source confirming this version"}. '
-        'Set "version" to null if you cannot determine the version with confidence.'
+        "Reply with JSON only:\n"
+        '{"version": "X.Y.Z", "source_url": "URL where you found it", "proof": "exact quote"}'
     )
 
     try:

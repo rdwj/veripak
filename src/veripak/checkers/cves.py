@@ -7,6 +7,8 @@ import urllib.parse
 import urllib.request
 from typing import Optional
 
+from packaging.version import Version, InvalidVersion
+
 from .. import config
 
 _HEADERS = {"User-Agent": "veripak/0.1"}
@@ -18,6 +20,9 @@ _TIMEOUT = 15
 
 OSV_ECOSYSTEMS = {"python", "javascript", "java", "go", "dotnet", "perl", "php"}
 NVD_ECOSYSTEMS = {"c", "cpp", "system", "desktop-app", "driver"}
+
+# Linux distro ecosystems to try via OSV before falling back to NVD keyword search
+_OSV_LINUX_ECOSYSTEMS = ["Debian", "Alpine", "Ubuntu"]
 
 OSV_ECOSYSTEM_MAP = {
     "python": "PyPI",
@@ -210,6 +215,67 @@ def _nvd_fetch(keyword: str, api_key: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# CPE version range filtering
+# ---------------------------------------------------------------------------
+
+
+def _version_in_cpe_range(version_str: str, cpe_match: dict) -> bool:
+    """Return True if version_str falls within the CPE match's version range.
+
+    Uses the four versionStart/End Inclusive/Excluding fields from NVD CPE data.
+    On any parse failure, returns True (conservative: assume affected).
+    """
+    try:
+        v = Version(version_str)
+    except InvalidVersion:
+        return True
+
+    start_incl = cpe_match.get("versionStartIncluding", "")
+    start_excl = cpe_match.get("versionStartExcluding", "")
+    end_incl = cpe_match.get("versionEndIncluding", "")
+    end_excl = cpe_match.get("versionEndExcluding", "")
+
+    has_range = any([start_incl, start_excl, end_incl, end_excl])
+    if not has_range:
+        return bool(cpe_match.get("vulnerable", True))
+
+    try:
+        if start_incl and v < Version(start_incl):
+            return False
+        if start_excl and v <= Version(start_excl):
+            return False
+        if end_incl and v > Version(end_incl):
+            return False
+        if end_excl and v >= Version(end_excl):
+            return False
+    except InvalidVersion:
+        return True
+
+    return True
+
+
+def _cve_affects_versions(cve_item: dict, versions: list[str]) -> bool:
+    """Return True if the CVE affects any of the given versions.
+
+    If the CVE has no CPE configuration data, returns True (conservative).
+    """
+    configurations = cve_item.get("cve", {}).get("configurations", [])
+    if not configurations:
+        return True
+
+    for config_entry in configurations:
+        for node in config_entry.get("nodes", []):
+            for cpe_match in node.get("cpeMatch", []):
+                if not cpe_match.get("vulnerable", False):
+                    continue
+                for ver in versions:
+                    if _version_in_cpe_range(ver, cpe_match):
+                        return True
+
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -249,27 +315,57 @@ def check_cves(
 
     elif ecosystem in NVD_ECOSYSTEMS:
         api_key = config.get("nvd_api_key") or ""
+
+        # 1. Try OSV.dev for common Linux ecosystems first
+        osv_cves_by_id: dict[str, dict] = {}
+        for linux_eco in _OSV_LINUX_ECOSYSTEMS:
+            for entry in _osv_query_package(name, linux_eco):
+                cve_id = entry["id"]
+                if cve_id not in osv_cves_by_id:
+                    osv_cves_by_id[cve_id] = entry
+
+        # 2. NVD keyword search with CPE version filtering
         raw_items = _nvd_fetch(name, api_key)
         name_lower = name.lower()
-        seen: set[str] = set()
-        versions_cves = []
+        nvd_cves_by_id: dict[str, dict] = {}
         for item in raw_items:
             cve_obj = item.get("cve", {})
             cve_id = cve_obj.get("id", "UNKNOWN")
             descriptions = cve_obj.get("descriptions", [])
             summary = descriptions[0].get("value", "") if descriptions else ""
-            if name_lower not in summary.lower() or cve_id in seen:
+            if name_lower not in summary.lower() or cve_id in nvd_cves_by_id:
                 continue
-            seen.add(cve_id)
-            versions_cves.append({
+
+            entry: dict = {
                 "id": cve_id,
                 "severity": _extract_nvd_severity(item),
                 "summary": summary,
-                "note": "NVD keyword search; not filtered by version",
-            })
+            }
+
+            configurations = item.get("cve", {}).get("configurations", [])
+            if not configurations:
+                entry["version_filter"] = "no_cpe_data"
+                nvd_cves_by_id[cve_id] = entry
+            elif versions and not _cve_affects_versions(item, versions):
+                # Filtered out by version range — silently drop
+                pass
+            else:
+                entry["version_filter"] = "matched" if versions else "unfiltered"
+                nvd_cves_by_id[cve_id] = entry
+
+        # 3. Merge: OSV takes precedence on duplicate IDs
+        merged: dict[str, dict] = {**nvd_cves_by_id, **osv_cves_by_id}
+        versions_cves = list(merged.values())
+
         latest_cves = []
         replacement_cves = []
-        method = "nvd_api"
+
+        if osv_cves_by_id and nvd_cves_by_id:
+            method = "osv_dev+nvd_api"
+        elif osv_cves_by_id:
+            method = "osv_dev"
+        else:
+            method = "nvd_api"
 
     else:
         return {
