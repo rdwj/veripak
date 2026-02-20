@@ -298,4 +298,4 @@ def generate_summary(
             return {"_error": "analysis stage returned no content", "_gaps": list(SUMMARY_SCHEMA.keys())}
         return _run_schema_mapping(analysis)
     except Exception as exc:
-        return {"_error": str(exc), "_gaps": list(SUMMARY_SCHEMA.keys())}
+        return {"_error": f"{type(exc).__name__}: {exc}", "_gaps": list(SUMMARY_SCHEMA.keys())}

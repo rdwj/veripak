@@ -255,12 +255,16 @@ class PackageCheckAgent:
         state.attempts[node_id] = state.attempts.get(node_id, 0) + 1
         return state.attempts[node_id]
 
+    _SUMMARY_RETRY_DELAY = 3  # seconds between summary retry attempts
+
     def _n6_summary(self, result: dict, versions_in_use: list[str]) -> None:
         """N6: generate a security summary via multi-turn model agent.
 
-        Retries once on failure since summary model calls can fail under
-        concurrent load (e.g. multiple veripak runs sharing an Ollama instance).
+        Retries once on failure with a delay, since summary model calls
+        can fail under concurrent load (e.g. multiple veripak runs
+        sharing an Ollama instance).
         """
+        import time
         from .checkers import summarize
 
         for attempt in range(2):
@@ -268,11 +272,13 @@ class PackageCheckAgent:
             if summary is not None and "_error" not in summary:
                 result["summary"] = summary
                 return
-            # First attempt failed — retry once
-            if attempt == 0 and summary and "_error" in summary:
+            # First attempt failed — log the error, wait, then retry
+            if attempt == 0:
+                error_msg = summary.get("_error", "unknown") if summary else "returned None"
                 result.setdefault("_agent", {}).setdefault("errors", []).append(
-                    f"n6 attempt 1: {summary['_error']}"
+                    f"n6 attempt 1: {error_msg}"
                 )
+                time.sleep(self._SUMMARY_RETRY_DELAY)
 
         # Store whatever we got, even if it has an _error
         if summary is not None:
