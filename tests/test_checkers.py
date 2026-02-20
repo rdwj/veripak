@@ -516,11 +516,11 @@ def test_infer_ecosystem_hits_first_registry():
     """First registry hit returns that ecosystem without calling later probes."""
     calls = []
 
-    def fake_probe_false(name):
+    def fake_probe_false(name, version=None):
         calls.append(name)
         return False
 
-    def fake_probe_true(name):
+    def fake_probe_true(name, version=None):
         calls.append(name)
         return True
 
@@ -537,7 +537,7 @@ def test_infer_ecosystem_hits_first_registry():
 
 def test_infer_ecosystem_falls_through_to_model():
     """All registry probes miss → model is called."""
-    all_false = lambda name: False  # noqa: E731
+    all_false = lambda name, version=None: False  # noqa: E731
 
     with patch("veripak.checkers.ecosystem._REGISTRY_PROBES", [
         ("python", all_false),
