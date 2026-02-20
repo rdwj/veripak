@@ -84,12 +84,15 @@ def check_eol(name: str, versions_in_use: list[str]) -> dict:
 
     branch = _extract_branch(versions_in_use[0]) if versions_in_use else None
 
-    # Find the matching cycle entry
+    # Find the matching cycle entry.
+    # endoflife.date uses mixed cycle formats: "6.7" for newer products and "6" (major-only)
+    # for older ones (e.g. Grafana 6.x, .NET 6). Try exact match first, then major-only.
     matched_cycle = None
     if branch:
+        major = branch.split(".")[0]
         for entry in result:
             cycle = str(entry.get("cycle", ""))
-            if cycle == branch or cycle.startswith(branch + "."):
+            if cycle == branch or cycle == major or cycle.startswith(branch + "."):
                 matched_cycle = entry
                 break
 

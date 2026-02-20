@@ -353,15 +353,22 @@ def check_cves(
         # 2. NVD keyword search with CPE version filtering
         nvd_keyword = _suggest_nvd_keyword(name, ecosystem)
         raw_items = _nvd_fetch(nvd_keyword, api_key)
-        keyword_lower = nvd_keyword.lower()
         name_lower = name.lower()
+        # When the model suggested a specific keyword (different from the raw package name),
+        # trust NVD's search results directly — applying a text filter would drop real CVEs
+        # whose descriptions don't repeat the keyword verbatim (e.g. ".NET and Visual Studio"
+        # doesn't contain "microsoft .net core"). Only filter when using the raw name, where
+        # NVD results can include unrelated products with similar names.
+        apply_text_filter = nvd_keyword == name
         nvd_cves_by_id: dict[str, dict] = {}
         for item in raw_items:
             cve_obj = item.get("cve", {})
             cve_id = cve_obj.get("id", "UNKNOWN")
             descriptions = cve_obj.get("descriptions", [])
             summary = descriptions[0].get("value", "") if descriptions else ""
-            if (keyword_lower not in summary.lower() and name_lower not in summary.lower()) or cve_id in nvd_cves_by_id:
+            if cve_id in nvd_cves_by_id:
+                continue
+            if apply_text_filter and name_lower not in summary.lower():
                 continue
 
             entry: dict = {
