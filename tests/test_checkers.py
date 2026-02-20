@@ -291,7 +291,7 @@ def test_extract_tarballs_from_html_empty():
 # eol._extract_branch
 # ---------------------------------------------------------------------------
 
-from veripak.checkers.eol import _extract_branch, _is_eol, check_eol
+from veripak.checkers.eol import _extract_branch, _is_eol, _normalize_candidates, check_eol
 
 
 @pytest.mark.parametrize("version, expected", [
@@ -393,6 +393,69 @@ def test_check_eol_no_matching_cycle():
         result = check_eol("dotnet", ["99.0.0"])
     assert result["eol"] is None
     assert result["product"] == "dotnet"
+
+
+# ---------------------------------------------------------------------------
+# eol._normalize_candidates
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_candidates_apache_tomcat():
+    """'Apache Tomcat' has a slug-map entry, so it resolves directly to ['tomcat']."""
+    candidates = _normalize_candidates("Apache Tomcat")
+    assert "tomcat" in candidates, (
+        f"Expected 'tomcat' in candidates for 'Apache Tomcat', got {candidates}"
+    )
+
+
+def test_normalize_candidates_direct_alias():
+    """'.NET Core' should resolve to ['dotnet'] via the slug map."""
+    candidates = _normalize_candidates(".NET Core")
+    assert candidates == ["dotnet"], (
+        f"Expected ['dotnet'] for '.NET Core', got {candidates}"
+    )
+
+
+def test_normalize_candidates_vendor_prefix_stripping():
+    """'Apache Kafka' (not in slug map) generates both full and stripped slugs."""
+    candidates = _normalize_candidates("Apache Kafka")
+    assert "apache-kafka" in candidates, (
+        f"Expected 'apache-kafka' in candidates, got {candidates}"
+    )
+    assert "kafka" in candidates, (
+        f"Expected 'kafka' in candidates, got {candidates}"
+    )
+
+
+def test_normalize_candidates_simple_name():
+    """A simple lowercase name like 'django' should return just itself."""
+    candidates = _normalize_candidates("django")
+    assert candidates == ["django"], (
+        f"Expected ['django'] for 'django', got {candidates}"
+    )
+
+
+def test_check_eol_apache_tomcat_resolves():
+    """'Apache Tomcat' resolves to 'tomcat' when 'apache-tomcat' 404s."""
+    tomcat_cycles = [
+        {"cycle": "9.0", "eol": "2027-10-31", "latest": "9.0.97"},
+        {"cycle": "10.1", "eol": False, "latest": "10.1.40"},
+    ]
+
+    def fake_urlopen(req, timeout=None):
+        url = req.full_url if hasattr(req, "full_url") else str(req)
+        if "/tomcat.json" in url:
+            return _make_urlopen_mock(tomcat_cycles)
+        raise Exception("404 Not Found")
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        result = check_eol("Apache Tomcat", ["9.0.69"])
+
+    assert result["product"] == "tomcat", (
+        f"Expected product='tomcat', got {result['product']!r}"
+    )
+    assert result["cycle"] == "9.0"
+    assert result["eol"] is not None
 
 
 # ---------------------------------------------------------------------------
