@@ -512,6 +512,12 @@ def test_nvd_fetch_by_cpe_name_empty_on_http_error():
 from veripak.checkers.ecosystem import infer_ecosystem, _probe_pypi, _probe_npm, _probe_nuget
 
 
+def test_infer_ecosystem_override():
+    """Well-known binary apps are returned from the override map without probing."""
+    result = infer_ecosystem("grafana", version="6.7.4")
+    assert result == "desktop-app", f"Expected 'desktop-app', got {result!r}"
+
+
 def test_infer_ecosystem_hits_first_registry():
     """First registry hit returns that ecosystem without calling later probes."""
     calls = []
@@ -543,9 +549,9 @@ def test_infer_ecosystem_falls_through_to_model():
         ("python", all_false),
     ]):
         with patch("veripak.checkers.ecosystem._infer_via_model", return_value="desktop-app") as mock_model:
-            result = infer_ecosystem("grafana", version="6.7.4")
+            result = infer_ecosystem("someunknownapp", version="1.2.3")
 
-    mock_model.assert_called_once_with("grafana", "6.7.4")
+    mock_model.assert_called_once_with("someunknownapp", "1.2.3")
     assert result == "desktop-app", f"Expected 'desktop-app', got {result!r}"
 
 

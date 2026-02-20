@@ -19,6 +19,22 @@ _VALID_ECOSYSTEMS = {
 
 _MODEL_ECOSYSTEM_LIST = "\n".join(f"- {e}" for e in sorted(_VALID_ECOSYSTEMS))
 
+# Hard-coded overrides for packages whose ecosystem the registry probes
+# or model reliably get wrong.  Key = package name (lowercase).
+# These are typically standalone applications distributed as binaries,
+# not libraries in any standard package ecosystem.
+_ECOSYSTEM_OVERRIDES: dict[str, str] = {
+    "grafana":      "desktop-app",   # binary releases on grafana.com / GitHub
+    "prometheus":   "desktop-app",   # binary releases on GitHub
+    "elasticsearch": "desktop-app",  # binary releases on elastic.co
+    "kibana":       "desktop-app",   # binary releases on elastic.co
+    "consul":       "desktop-app",   # binary releases on releases.hashicorp.com
+    "vault":        "desktop-app",   # binary releases on releases.hashicorp.com
+    "terraform":    "desktop-app",   # binary releases on releases.hashicorp.com
+    "kubectl":      "desktop-app",   # binary releases on kubernetes.io
+    "helm":         "desktop-app",   # binary releases on GitHub
+}
+
 
 def _head_ok(url: str) -> bool:
     """Return True if a HEAD (or GET) request to url returns 2xx."""
@@ -129,7 +145,14 @@ def _infer_via_model(name: str, version: Optional[str] = None) -> Optional[str]:
     search_text = "\n\n".join(snippets) if snippets else "(no search results)"
 
     prompt = (
-        f'What ecosystem does the software package "{name}" belong to?\n\n'
+        f'How is the software package "{name}" DISTRIBUTED to end users?\n\n'
+        f"Choose the ecosystem based on where users obtain and install the package, "
+        f"NOT the programming language it is written in.\n\n"
+        f"Key distinctions:\n"
+        f'- "go" means a Go library installed via `go get` (e.g. github.com/pkg/errors)\n'
+        f'- "desktop-app" means a standalone binary application released on GitHub or '
+        f"an official download page (e.g. Grafana, Prometheus, Vault, kubectl)\n"
+        f'- "python" means a package installed via pip/PyPI\n\n'
         f"Search results:\n{search_text}\n\n"
         f"Reply with exactly one of these ecosystem names, nothing else:\n"
         f"{_MODEL_ECOSYSTEM_LIST}"
@@ -154,6 +177,10 @@ def infer_ecosystem(name: str, version: Optional[str] = None) -> Optional[str]:
     Returns None if inference fails (caller should prompt user to supply
     --ecosystem manually).
     """
+    override = _ECOSYSTEM_OVERRIDES.get(name.lower())
+    if override:
+        return override
+
     for ecosystem, probe_fn in _REGISTRY_PROBES:
         if probe_fn(name, version):
             return ecosystem
