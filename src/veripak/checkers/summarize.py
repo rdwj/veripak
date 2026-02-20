@@ -295,7 +295,7 @@ def generate_summary(
     try:
         analysis = _run_analysis(context)
         if not analysis:
-            return None
+            return {"_error": "analysis stage returned no content", "_gaps": list(SUMMARY_SCHEMA.keys())}
         return _run_schema_mapping(analysis)
-    except Exception:
-        return None
+    except Exception as exc:
+        return {"_error": str(exc), "_gaps": list(SUMMARY_SCHEMA.keys())}

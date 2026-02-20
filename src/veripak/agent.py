@@ -256,9 +256,25 @@ class PackageCheckAgent:
         return state.attempts[node_id]
 
     def _n6_summary(self, result: dict, versions_in_use: list[str]) -> None:
-        """N6: generate a security summary via multi-turn model agent."""
+        """N6: generate a security summary via multi-turn model agent.
+
+        Retries once on failure since summary model calls can fail under
+        concurrent load (e.g. multiple veripak runs sharing an Ollama instance).
+        """
         from .checkers import summarize
-        summary = summarize.generate_summary(result, versions_in_use=versions_in_use)
+
+        for attempt in range(2):
+            summary = summarize.generate_summary(result, versions_in_use=versions_in_use)
+            if summary is not None and "_error" not in summary:
+                result["summary"] = summary
+                return
+            # First attempt failed — retry once
+            if attempt == 0 and summary and "_error" in summary:
+                result.setdefault("_agent", {}).setdefault("errors", []).append(
+                    f"n6 attempt 1: {summary['_error']}"
+                )
+
+        # Store whatever we got, even if it has an _error
         if summary is not None:
             result["summary"] = summary
 
