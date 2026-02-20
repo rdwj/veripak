@@ -248,10 +248,20 @@ def _run_schema_mapping(analysis: str) -> dict:
     except Exception:
         result = dict(SUMMARY_SCHEMA)
 
+    _ENUM_FIELDS = {
+        "migration_complexity": {"patch", "minor", "major", "unknown"},
+        "urgency": {"immediate", "high", "medium", "low"},
+    }
+
     # Normalise: only keep known schema keys, coerce types where possible
     out: dict = {}
     for key in SUMMARY_SCHEMA:
-        out[key] = result.get(key)
+        val = result.get(key)
+        if isinstance(val, str) and key in _ENUM_FIELDS:
+            val = val.lower()
+            if val not in _ENUM_FIELDS[key]:
+                val = None
+        out[key] = val
 
     # Collect null fields as _gaps
     gaps = [k for k, v in out.items() if v is None]
