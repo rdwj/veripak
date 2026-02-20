@@ -408,3 +408,90 @@ def test_filter_no_cpe_empty_entries():
         result = _filter_no_cpe_via_model([], "grafana", ["6.7.4"])
     assert result == []
     mock_model.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# cves._suggest_nvd_cpe
+# ---------------------------------------------------------------------------
+
+from veripak.checkers.cves import _suggest_nvd_cpe
+
+
+def test_suggest_nvd_cpe_valid_response():
+    """Model returns a well-formed vendor:product string."""
+    with patch("veripak.checkers.cves.model_caller.call_model", return_value="grafana:grafana"):
+        result = _suggest_nvd_cpe("grafana", "desktop-app")
+    assert result == "grafana:grafana"
+
+
+def test_suggest_nvd_cpe_strips_quotes():
+    """Model wraps the answer in quotes — they are stripped."""
+    with patch("veripak.checkers.cves.model_caller.call_model", return_value='"microsoft:.net_core"'):
+        result = _suggest_nvd_cpe("dotnet", "system")
+    assert result == "microsoft:.net_core"
+
+
+def test_suggest_nvd_cpe_rejects_invalid_format():
+    """Model returns something that doesn't match vendor:product pattern."""
+    with patch("veripak.checkers.cves.model_caller.call_model", return_value="not a valid cpe string here"):
+        result = _suggest_nvd_cpe("somepackage", "desktop-app")
+    assert result == "", f"Should return empty string, got {result!r}"
+
+
+def test_suggest_nvd_cpe_rejects_uppercase():
+    """Uppercase letters in model response are lowercased; if still invalid, returns empty."""
+    with patch("veripak.checkers.cves.model_caller.call_model", return_value="GRAFANA:GRAFANA"):
+        result = _suggest_nvd_cpe("grafana", "desktop-app")
+    # After .lower() → "grafana:grafana" which is valid
+    assert result == "grafana:grafana"
+
+
+def test_suggest_nvd_cpe_fallback_on_error():
+    """Model raises exception — returns empty string."""
+    with patch("veripak.checkers.cves.model_caller.call_model", side_effect=RuntimeError("down")):
+        result = _suggest_nvd_cpe("grafana", "desktop-app")
+    assert result == ""
+
+
+# ---------------------------------------------------------------------------
+# cves._nvd_fetch_by_cpe_name
+# ---------------------------------------------------------------------------
+
+from veripak.checkers.cves import _nvd_fetch_by_cpe_name
+
+
+def _make_cpe_response(vulns: list) -> MagicMock:
+    """Return a mock urlopen context manager that yields a JSON NVD response."""
+    body = _json.dumps({"vulnerabilities": vulns}).encode()
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = body
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    return mock_resp
+
+
+def test_nvd_fetch_by_cpe_name_returns_vulns():
+    """Normal 200 response: all vulnerabilities are returned."""
+    fake_vulns = [{"cve": {"id": "CVE-2021-27358"}}, {"cve": {"id": "CVE-2021-39226"}}]
+    with patch("veripak.checkers.cves.urllib.request.urlopen", return_value=_make_cpe_response(fake_vulns)):
+        result = _nvd_fetch_by_cpe_name("cpe:2.3:a:grafana:grafana:6.7.4:*:*:*:*:*:*:*", "")
+    assert len(result) == 2
+    ids = [item.get("cve", {}).get("id") for item in result]
+    assert "CVE-2021-27358" in ids
+    assert "CVE-2021-39226" in ids
+
+
+def test_nvd_fetch_by_cpe_name_empty_on_exception():
+    """Network exception returns empty list."""
+    with patch("veripak.checkers.cves.urllib.request.urlopen", side_effect=OSError("connection refused")):
+        result = _nvd_fetch_by_cpe_name("cpe:2.3:a:grafana:grafana:6.7.4:*:*:*:*:*:*:*", "")
+    assert result == []
+
+
+def test_nvd_fetch_by_cpe_name_empty_on_http_error():
+    """Non-retryable HTTP error returns empty list after one attempt."""
+    import urllib.error
+    with patch("veripak.checkers.cves.urllib.request.urlopen",
+               side_effect=urllib.error.HTTPError(None, 404, "Not Found", {}, None)):
+        result = _nvd_fetch_by_cpe_name("cpe:2.3:a:grafana:grafana:6.7.4:*:*:*:*:*:*:*", "")
+    assert result == []

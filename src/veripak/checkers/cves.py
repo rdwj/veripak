@@ -1,6 +1,7 @@
 """CVE lookup via OSV.dev (programmatic ecosystems) and NVD API v2 (non-programmatic)."""
 
 import json
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -215,6 +216,32 @@ def _nvd_fetch(keyword: str, api_key: str) -> list[dict]:
     return []
 
 
+def _nvd_fetch_by_cpe_name(cpe_name: str, api_key: str) -> list[dict]:
+    """Query NVD for CVEs matching a specific CPE name (version-aware).
+
+    Unlike keyword search, cpeName queries return only CVEs where the specified
+    product version falls within the CVE's declared vulnerable range. NVD
+    applies its own version matching server-side, so results are authoritative
+    and pagination is manageable (tens of CVEs per version, not hundreds).
+    """
+    url = f"{_NVD_BASE}?cpeName={urllib.parse.quote(cpe_name)}&resultsPerPage=500"
+    extra = {"apiKey": api_key} if api_key else {}
+    for attempt in range(_NVD_MAX_RETRIES):
+        _nvd_rate_limit(api_key)
+        req = urllib.request.Request(url, headers={**_HEADERS, **extra})
+        try:
+            with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
+                return (_parse_body(resp.read()) or {}).get("vulnerabilities", [])
+        except urllib.error.HTTPError as exc:
+            if exc.code in (403, 503):
+                time.sleep(2 ** (attempt + 1))
+            else:
+                break
+        except Exception:
+            break
+    return []
+
+
 # ---------------------------------------------------------------------------
 # CPE version range filtering
 # ---------------------------------------------------------------------------
@@ -277,7 +304,7 @@ def _cve_affects_versions(cve_item: dict, versions: list[str]) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# NVD keyword helper
+# NVD model helpers
 # ---------------------------------------------------------------------------
 
 
@@ -296,6 +323,27 @@ def _suggest_nvd_keyword(name: str, ecosystem: str) -> str:
     except Exception:
         pass
     return name
+
+
+def _suggest_nvd_cpe(name: str, ecosystem: str) -> str:
+    """Ask the model for the NVD CPE 2.3 vendor:product string.
+
+    Returns a string like "grafana:grafana" or "microsoft:.net_core".
+    Returns empty string on any failure or unrecognised format.
+    """
+    prompt = (
+        f'What is the NVD CPE 2.3 vendor:product identifier for the package "{name}" '
+        f'(ecosystem: {ecosystem})? Reply with just "vendor:product", nothing else. '
+        f'Examples: "grafana:grafana", "microsoft:.net_core", "openssl:openssl", '
+        f'"linux:linux_kernel"'
+    )
+    try:
+        cpe = model_caller.call_model(prompt).strip().strip('"').strip("'").lower()
+        if cpe and re.match(r'^[a-z0-9_\-]+:[a-z0-9_.\-]+$', cpe):
+            return cpe
+    except Exception:
+        pass
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -402,61 +450,89 @@ def check_cves(
                     if cve_id not in osv_cves_by_id:
                         osv_cves_by_id[cve_id] = entry
 
-        # 2. NVD keyword search with CPE version filtering
-        nvd_keyword = _suggest_nvd_keyword(name, ecosystem)
-        raw_items = _nvd_fetch(nvd_keyword, api_key)
-        name_lower = name.lower()
-        # When the model suggested a specific keyword (different from the raw package name),
-        # trust NVD's search results directly — applying a text filter would drop real CVEs
-        # whose descriptions don't repeat the keyword verbatim (e.g. ".NET and Visual Studio"
-        # doesn't contain "microsoft .net core"). Only filter when using the raw name, where
-        # NVD results can include unrelated products with similar names.
-        apply_text_filter = nvd_keyword == name
+        # 2. NVD CVE lookup — CPE-based when versions are known, keyword fallback otherwise.
         nvd_cves_by_id: dict[str, dict] = {}
-        for item in raw_items:
-            cve_obj = item.get("cve", {})
-            cve_id = cve_obj.get("id", "UNKNOWN")
-            descriptions = cve_obj.get("descriptions", [])
-            summary = descriptions[0].get("value", "") if descriptions else ""
-            if cve_id in nvd_cves_by_id:
-                continue
-            if apply_text_filter and name_lower not in summary.lower():
-                continue
 
-            entry: dict = {
-                "id": cve_id,
-                "severity": _extract_nvd_severity(item),
-                "summary": summary,
-            }
-
-            configurations = item.get("cve", {}).get("configurations", [])
-            if not configurations:
-                entry["version_filter"] = "no_cpe_data"
-                nvd_cves_by_id[cve_id] = entry
-            elif versions and not _cve_affects_versions(item, versions):
-                # Filtered out by version range — silently drop
-                pass
-            else:
-                entry["version_filter"] = "matched" if versions else "unfiltered"
-                nvd_cves_by_id[cve_id] = entry
-
-        # 2.5. Filter no_cpe_data entries via the model when specific versions are known.
-        # Structural CPE version filtering cannot apply to these entries, so we ask the
-        # model to exclude CVEs whose descriptions clearly target a different version range
-        # or a third-party plugin/extension rather than the package itself.
         if versions:
-            no_cpe = [
-                e for e in nvd_cves_by_id.values()
-                if e.get("version_filter") == "no_cpe_data"
-            ]
-            if no_cpe:
-                kept = _filter_no_cpe_via_model(no_cpe, name, versions)
-                kept_ids = {e["id"] for e in kept}
-                nvd_cves_by_id = {
-                    cve_id: e
-                    for cve_id, e in nvd_cves_by_id.items()
-                    if e.get("version_filter") != "no_cpe_data" or cve_id in kept_ids
+            # 2a. CPE-based query: ask the model for the NVD CPE vendor:product string,
+            # then query NVD by cpeName for each version in use. NVD performs its own
+            # version range matching server-side, so all returned CVEs are confirmed to
+            # affect the queried version. This avoids the keyword-search ordering problem
+            # where popular packages have hundreds of CVEs and the relevant version-specific
+            # ones are buried beyond the first page.
+            cpe_prefix = _suggest_nvd_cpe(name, ecosystem)
+            if cpe_prefix:
+                for ver in versions:
+                    cpe_name = f"cpe:2.3:a:{cpe_prefix}:{ver}:*:*:*:*:*:*:*"
+                    for item in _nvd_fetch_by_cpe_name(cpe_name, api_key):
+                        cve_obj = item.get("cve", {})
+                        cve_id = cve_obj.get("id", "UNKNOWN")
+                        if cve_id in nvd_cves_by_id:
+                            continue
+                        descriptions = cve_obj.get("descriptions", [])
+                        summary = descriptions[0].get("value", "") if descriptions else ""
+                        nvd_cves_by_id[cve_id] = {
+                            "id": cve_id,
+                            "severity": _extract_nvd_severity(item),
+                            "summary": summary,
+                            "version_filter": "cpe_matched",
+                        }
+
+        if not nvd_cves_by_id:
+            # 2b. Keyword search fallback: used when no specific versions are provided
+            # (package-level query), when the model couldn't produce a CPE string, or
+            # when the CPE query returned no results (unindexed product, wrong CPE).
+            nvd_keyword = _suggest_nvd_keyword(name, ecosystem)
+            raw_items = _nvd_fetch(nvd_keyword, api_key)
+            name_lower = name.lower()
+            # When the model suggested a specific keyword (different from the raw package
+            # name), trust NVD's search results — applying a text filter would drop real
+            # CVEs whose descriptions don't repeat the keyword verbatim. Only filter when
+            # using the raw name, where unrelated products with similar names can appear.
+            apply_text_filter = nvd_keyword == name
+            for item in raw_items:
+                cve_obj = item.get("cve", {})
+                cve_id = cve_obj.get("id", "UNKNOWN")
+                descriptions = cve_obj.get("descriptions", [])
+                summary = descriptions[0].get("value", "") if descriptions else ""
+                if cve_id in nvd_cves_by_id:
+                    continue
+                if apply_text_filter and name_lower not in summary.lower():
+                    continue
+
+                entry: dict = {
+                    "id": cve_id,
+                    "severity": _extract_nvd_severity(item),
+                    "summary": summary,
                 }
+
+                configurations = item.get("cve", {}).get("configurations", [])
+                if not configurations:
+                    entry["version_filter"] = "no_cpe_data"
+                    nvd_cves_by_id[cve_id] = entry
+                elif versions and not _cve_affects_versions(item, versions):
+                    # Filtered out by version range — silently drop
+                    pass
+                else:
+                    entry["version_filter"] = "matched" if versions else "unfiltered"
+                    nvd_cves_by_id[cve_id] = entry
+
+            # Filter no_cpe_data entries via the model when specific versions are known.
+            # Structural CPE version filtering cannot apply, so the model checks the
+            # description text for version range exclusions and plugin/extension indicators.
+            if versions:
+                no_cpe = [
+                    e for e in nvd_cves_by_id.values()
+                    if e.get("version_filter") == "no_cpe_data"
+                ]
+                if no_cpe:
+                    kept = _filter_no_cpe_via_model(no_cpe, name, versions)
+                    kept_ids = {e["id"] for e in kept}
+                    nvd_cves_by_id = {
+                        cve_id: e
+                        for cve_id, e in nvd_cves_by_id.items()
+                        if e.get("version_filter") != "no_cpe_data" or cve_id in kept_ids
+                    }
 
         # 3. Merge: OSV takes precedence on duplicate IDs
         merged: dict[str, dict] = {**nvd_cves_by_id, **osv_cves_by_id}
