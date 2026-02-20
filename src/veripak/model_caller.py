@@ -86,3 +86,49 @@ def call_model(prompt: str, system: str = "") -> str:
         f"  Primary ({model}) error: {primary_error!r}\n"
         f"  Anthropic fallback error: {anthropic_error!r}"
     )
+
+
+def call_model_chat(messages: list, tools: Optional[list] = None):
+    """Multi-turn call returning the full message object (supports tool_calls).
+
+    Falls back to Anthropic if the primary backend fails.
+    Raises RuntimeError if both fail.
+    """
+    import litellm
+
+    model, api_base = _resolve_model()
+
+    primary_error: Optional[Exception] = None
+    try:
+        kwargs: dict = {"model": model, "messages": messages}
+        if api_base:
+            kwargs["api_base"] = api_base
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = "auto"
+        resp = litellm.completion(**kwargs)
+        return resp.choices[0].message
+    except Exception as exc:
+        primary_error = exc
+
+    # --- Anthropic fallback ---
+    anthropic_key = _load_anthropic_key()
+    anthropic_error: Optional[Exception] = None
+    try:
+        kwargs = {"model": _ANTHROPIC_FALLBACK_MODEL, "messages": messages}
+        if anthropic_key:
+            os.environ.setdefault("ANTHROPIC_API_KEY", anthropic_key)
+            kwargs["api_key"] = anthropic_key
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = "auto"
+        resp = litellm.completion(**kwargs)
+        return resp.choices[0].message
+    except Exception as exc:
+        anthropic_error = exc
+
+    raise RuntimeError(
+        f"model_caller: both primary backend and Anthropic fallback failed.\n"
+        f"  Primary ({model}) error: {primary_error!r}\n"
+        f"  Anthropic fallback error: {anthropic_error!r}"
+    )

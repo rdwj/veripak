@@ -50,6 +50,7 @@ class PackageCheckAgent:
         download_url: Optional[str] = None,
         skip_cves: bool = False,
         skip_download: bool = False,
+        skip_summary: bool = False,
     ) -> dict:
         """Run the full audit pipeline and return a consolidated result dict."""
         state = AgentState(
@@ -94,7 +95,13 @@ class PackageCheckAgent:
         if state.replacement_name:
             self._n5_replacement(state)
 
-        return self._to_result(state)
+        result = self._to_result(state)
+
+        # N6: security summary (multi-turn model agent)
+        if not skip_summary:
+            self._n6_summary(result, state.versions_in_use)
+
+        return result
 
     # ------------------------------------------------------------------
     # Node implementations
@@ -240,11 +247,19 @@ class PackageCheckAgent:
         state.attempts[node_id] = state.attempts.get(node_id, 0) + 1
         return state.attempts[node_id]
 
+    def _n6_summary(self, result: dict, versions_in_use: list[str]) -> None:
+        """N6: generate a security summary via multi-turn model agent."""
+        from .checkers import summarize
+        summary = summarize.generate_summary(result, versions_in_use=versions_in_use)
+        if summary is not None:
+            result["summary"] = summary
+
     def _to_result(self, state: AgentState) -> dict:
         """Assemble the final result dict from agent state."""
         return {
             "package": state.package,
             "ecosystem": state.ecosystem,
+            "versions_in_use": state.versions_in_use,
             "checked_at": datetime.datetime.utcnow().isoformat() + "Z",
             "eol": state.eol_result,
             "version": state.version_result,

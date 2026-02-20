@@ -96,6 +96,7 @@ def cmd_config() -> None:
 @click.option("--json", "output_json", is_flag=True, help="Output machine-readable JSON")
 @click.option("--no-cves", is_flag=True, help="Skip CVE check")
 @click.option("--no-download", is_flag=True, help="Skip download validation")
+@click.option("--no-summary", is_flag=True, help="Skip AI security summary")
 def cmd_check(
     package: str,
     ecosystem: str,
@@ -108,6 +109,7 @@ def cmd_check(
     output_json: bool,
     no_cves: bool,
     no_download: bool,
+    no_summary: bool,
 ) -> None:
     """Audit PACKAGE in ECOSYSTEM."""
     agent = PackageCheckAgent()
@@ -122,6 +124,7 @@ def cmd_check(
         download_url=download_url or None,
         skip_cves=no_cves,
         skip_download=no_download,
+        skip_summary=no_summary,
     )
 
     if output_json:
@@ -178,6 +181,20 @@ def cmd_check(
         hc = cve_result.get("high_critical_count", 0)
         cve_str = f"{total} total  ({hc} HIGH/CRITICAL)  [{cve_result.get('method')}]"
         click.echo(f"  CVEs:        {cve_str}")
+
+    summary = result.get("summary")
+    if summary:
+        click.echo()
+        click.echo("  Summary:")
+        version_gap = summary.get("version_gap")
+        if version_gap:
+            click.echo(f"    Version gap:  {version_gap}")
+        eol_label = summary.get("eol_date")
+        if eol_label:
+            click.echo(f"    EOL:          {eol_label}")
+        rec = summary.get("recommendation")
+        if rec:
+            click.echo(f"    Recommend:    {rec}")
 
     if replacement_result is not None:
         r_confirmed = replacement_result.get("confirmed")
