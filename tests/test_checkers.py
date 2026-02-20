@@ -345,3 +345,66 @@ def test_check_eol_no_matching_cycle():
         result = check_eol("dotnet", ["99.0.0"])
     assert result["eol"] is None
     assert result["product"] == "dotnet"
+
+
+# ---------------------------------------------------------------------------
+# cves._filter_no_cpe_via_model
+# ---------------------------------------------------------------------------
+
+from veripak.checkers.cves import _filter_no_cpe_via_model
+
+
+_NO_CPE_ENTRIES = [
+    {"id": "CVE-2024-1313", "severity": "MEDIUM", "summary": "This issue affects Grafana: from 9.5.0 before 9.5.18.", "version_filter": "no_cpe_data"},
+    {"id": "CVE-2025-8341", "severity": "MEDIUM", "summary": "The Infinity datasource plugin for Grafana. Fixed in version 3.4.1.", "version_filter": "no_cpe_data"},
+    {"id": "CVE-2021-27358", "severity": "HIGH",   "summary": "Grafana snapshot API DoS affecting 6.7.3 through 7.4.1.", "version_filter": "no_cpe_data"},
+]
+
+
+def test_filter_no_cpe_drops_excluded_ids():
+    """Model returns affects=false for two entries — both are dropped."""
+    model_response = '[{"id":"CVE-2024-1313","affects":false},{"id":"CVE-2025-8341","affects":false},{"id":"CVE-2021-27358","affects":true}]'
+    with patch("veripak.checkers.cves.model_caller.call_model", return_value=model_response):
+        result = _filter_no_cpe_via_model(_NO_CPE_ENTRIES, "grafana", ["6.7.4"])
+    ids = [e["id"] for e in result]
+    assert ids == ["CVE-2021-27358"], f"Expected only CVE-2021-27358, got {ids}"
+
+
+def test_filter_no_cpe_keeps_all_when_all_affect():
+    """Model returns affects=true for all entries — nothing dropped."""
+    model_response = '[{"id":"CVE-2024-1313","affects":true},{"id":"CVE-2025-8341","affects":true},{"id":"CVE-2021-27358","affects":true}]'
+    with patch("veripak.checkers.cves.model_caller.call_model", return_value=model_response):
+        result = _filter_no_cpe_via_model(_NO_CPE_ENTRIES, "grafana", ["6.7.4"])
+    assert len(result) == 3
+
+
+def test_filter_no_cpe_fallback_on_model_error():
+    """Model raises an exception — all entries are returned unchanged."""
+    with patch("veripak.checkers.cves.model_caller.call_model", side_effect=RuntimeError("timeout")):
+        result = _filter_no_cpe_via_model(_NO_CPE_ENTRIES, "grafana", ["6.7.4"])
+    assert len(result) == 3, "Fallback should return all entries on error"
+
+
+def test_filter_no_cpe_fallback_on_malformed_json():
+    """Model returns non-JSON — all entries are returned unchanged."""
+    with patch("veripak.checkers.cves.model_caller.call_model", return_value="I cannot determine this."):
+        result = _filter_no_cpe_via_model(_NO_CPE_ENTRIES, "grafana", ["6.7.4"])
+    assert len(result) == 3, "Fallback should return all entries on malformed JSON"
+
+
+def test_filter_no_cpe_strips_code_fence():
+    """Model wraps response in markdown code fence — still parsed correctly."""
+    model_response = '```json\n[{"id":"CVE-2024-1313","affects":false},{"id":"CVE-2025-8341","affects":true},{"id":"CVE-2021-27358","affects":true}]\n```'
+    with patch("veripak.checkers.cves.model_caller.call_model", return_value=model_response):
+        result = _filter_no_cpe_via_model(_NO_CPE_ENTRIES, "grafana", ["6.7.4"])
+    ids = [e["id"] for e in result]
+    assert "CVE-2024-1313" not in ids
+    assert "CVE-2025-8341" in ids
+
+
+def test_filter_no_cpe_empty_entries():
+    """Empty input returns empty without calling the model."""
+    with patch("veripak.checkers.cves.model_caller.call_model") as mock_model:
+        result = _filter_no_cpe_via_model([], "grafana", ["6.7.4"])
+    assert result == []
+    mock_model.assert_not_called()

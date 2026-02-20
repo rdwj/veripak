@@ -299,6 +299,58 @@ def _suggest_nvd_keyword(name: str, ecosystem: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# no_cpe_data model filter
+# ---------------------------------------------------------------------------
+
+
+def _filter_no_cpe_via_model(
+    entries: list[dict], name: str, versions: list[str]
+) -> list[dict]:
+    """Use the model to filter no_cpe_data CVE entries by version relevance.
+
+    NVD entries without CPE configuration data cannot be version-filtered
+    structurally. This function sends all such entries in a single batch to
+    the model, which checks each description for two disqualifying conditions:
+      1. The stated affected version range clearly excludes the given version(s).
+      2. The CVE is for a plugin/extension rather than the package itself.
+
+    Falls back to returning all entries unchanged on any failure.
+    """
+    if not entries:
+        return entries
+
+    version_str = ", ".join(versions)
+    lines = [
+        f'{e["id"]}: {(e.get("summary") or "").replace(chr(10), " ")[:400]}'
+        for e in entries
+    ]
+
+    prompt = (
+        f'For each CVE below, does it affect {name} version {version_str}? '
+        f'Answer false if the described affected version range clearly excludes '
+        f'{version_str}, or if the CVE is for a plugin/extension rather than '
+        f'{name} itself. If uncertain, answer true (conservative). '
+        'Reply with ONLY a JSON array: [{"id":"CVE-...","affects":true},...]\n\n'
+        + "\n".join(lines)
+    )
+
+    try:
+        raw = model_caller.call_model(prompt).strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+            raw = raw.strip()
+        decisions = json.loads(raw)
+        if not isinstance(decisions, list):
+            return entries
+        exclude_ids = {str(d["id"]) for d in decisions if not d.get("affects", True)}
+        return [e for e in entries if e["id"] not in exclude_ids]
+    except Exception:
+        return entries
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -387,6 +439,24 @@ def check_cves(
             else:
                 entry["version_filter"] = "matched" if versions else "unfiltered"
                 nvd_cves_by_id[cve_id] = entry
+
+        # 2.5. Filter no_cpe_data entries via the model when specific versions are known.
+        # Structural CPE version filtering cannot apply to these entries, so we ask the
+        # model to exclude CVEs whose descriptions clearly target a different version range
+        # or a third-party plugin/extension rather than the package itself.
+        if versions:
+            no_cpe = [
+                e for e in nvd_cves_by_id.values()
+                if e.get("version_filter") == "no_cpe_data"
+            ]
+            if no_cpe:
+                kept = _filter_no_cpe_via_model(no_cpe, name, versions)
+                kept_ids = {e["id"] for e in kept}
+                nvd_cves_by_id = {
+                    cve_id: e
+                    for cve_id, e in nvd_cves_by_id.items()
+                    if e.get("version_filter") != "no_cpe_data" or cve_id in kept_ids
+                }
 
         # 3. Merge: OSV takes precedence on duplicate IDs
         merged: dict[str, dict] = {**nvd_cves_by_id, **osv_cves_by_id}
