@@ -82,7 +82,7 @@ def cmd_config() -> None:
 
 @main.command("check")
 @click.argument("package")
-@click.option("--ecosystem", "-e", required=True, help="Package ecosystem (python, java, c, …)")
+@click.option("--ecosystem", "-e", default=None, help="Package ecosystem (python, java, c, …). Inferred automatically if omitted.")
 @click.option(
     "--versions", "version_list",
     default="",
@@ -112,6 +112,22 @@ def cmd_check(
     no_summary: bool,
 ) -> None:
     """Audit PACKAGE in ECOSYSTEM."""
+    if not ecosystem:
+        from .checkers.ecosystem import infer_ecosystem
+        inferred = infer_ecosystem(
+            package,
+            version=version_list.split(",")[0].strip() if version_list.strip() else None,
+        )
+        if not inferred:
+            raise click.UsageError(
+                f"Could not infer ecosystem for '{package}'. "
+                "Please specify it with --ecosystem."
+            )
+        ecosystem = inferred
+        inferred_note = "  (inferred)"
+    else:
+        inferred_note = ""
+
     agent = PackageCheckAgent()
     result = agent.run(
         package=package,
@@ -141,7 +157,7 @@ def cmd_check(
     latest_stable = version_result.get("version")
 
     click.echo()
-    click.echo(f"  Package:     {package}  ({ecosystem})")
+    click.echo(f"  Package:     {package}  ({ecosystem}{inferred_note})")
 
     eol_result = result.get("eol") or {}
     if eol_result.get("eol") is True:

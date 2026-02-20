@@ -503,3 +503,64 @@ def test_nvd_fetch_by_cpe_name_empty_on_http_error():
                side_effect=urllib.error.HTTPError(None, 404, "Not Found", {}, None)):
         result = _nvd_fetch_by_cpe_name("cpe:2.3:a:grafana:grafana:6.7.4:*:*:*:*:*:*:*", "")
     assert result == []
+
+
+# ---------------------------------------------------------------------------
+# ecosystem.infer_ecosystem
+# ---------------------------------------------------------------------------
+
+from veripak.checkers.ecosystem import infer_ecosystem, _probe_pypi, _probe_npm, _probe_nuget
+
+
+def test_infer_ecosystem_hits_first_registry():
+    """First registry hit returns that ecosystem without calling later probes."""
+    calls = []
+
+    def fake_probe_false(name):
+        calls.append(name)
+        return False
+
+    def fake_probe_true(name):
+        calls.append(name)
+        return True
+
+    with patch("veripak.checkers.ecosystem._REGISTRY_PROBES", [
+        ("python", fake_probe_false),
+        ("javascript", fake_probe_true),
+        ("dotnet", fake_probe_true),   # should not be reached
+    ]):
+        result = infer_ecosystem("somepackage")
+
+    assert result == "javascript", f"Expected 'javascript', got {result!r}"
+    assert len(calls) == 2, f"Expected 2 probe calls (stopped after hit), got {len(calls)}"
+
+
+def test_infer_ecosystem_falls_through_to_model():
+    """All registry probes miss → model is called."""
+    all_false = lambda name: False  # noqa: E731
+
+    with patch("veripak.checkers.ecosystem._REGISTRY_PROBES", [
+        ("python", all_false),
+    ]):
+        with patch("veripak.checkers.ecosystem._infer_via_model", return_value="desktop-app") as mock_model:
+            result = infer_ecosystem("grafana", version="6.7.4")
+
+    mock_model.assert_called_once_with("grafana", "6.7.4")
+    assert result == "desktop-app", f"Expected 'desktop-app', got {result!r}"
+
+
+def test_infer_ecosystem_returns_none_on_total_failure():
+    """All probes miss and model returns None → infer_ecosystem returns None."""
+    with patch("veripak.checkers.ecosystem._REGISTRY_PROBES", []):
+        with patch("veripak.checkers.ecosystem._infer_via_model", return_value=None):
+            result = infer_ecosystem("unknownpkg")
+    assert result is None, f"Expected None, got {result!r}"
+
+
+def test_infer_via_model_rejects_invalid_ecosystem():
+    """Model returns something not in _VALID_ECOSYSTEMS → returns None."""
+    from veripak.checkers.ecosystem import _infer_via_model
+    with patch("veripak.checkers.ecosystem.tavily_client.search", return_value=[]):
+        with patch("veripak.checkers.ecosystem.model_caller.call_model", return_value="ruby"):
+            result = _infer_via_model("rails")
+    assert result is None, f"Expected None for invalid ecosystem 'ruby', got {result!r}"
