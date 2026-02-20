@@ -10,6 +10,7 @@ from typing import Optional
 from packaging.version import Version, InvalidVersion
 
 from .. import config
+from .. import model_caller
 
 _HEADERS = {"User-Agent": "veripak/0.1"}
 _TIMEOUT = 15
@@ -276,6 +277,28 @@ def _cve_affects_versions(cve_item: dict, versions: list[str]) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# NVD keyword helper
+# ---------------------------------------------------------------------------
+
+
+def _suggest_nvd_keyword(name: str, ecosystem: str) -> str:
+    """Ask the model for a precise NVD search keyword. Falls back to name on any failure."""
+    prompt = (
+        f'What is the best NVD (National Vulnerability Database) keywordSearch term '
+        f'for the package "{name}" (ecosystem: {ecosystem})? '
+        f'Reply with just the search term string, nothing else. '
+        f'Example: for "dotnet" in the "system" ecosystem, reply: microsoft .net core'
+    )
+    try:
+        keyword = model_caller.call_model(prompt).strip().strip('"').strip("'").lower()
+        if keyword and len(keyword) <= 100:
+            return keyword
+    except Exception:
+        pass
+    return name
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -316,16 +339,21 @@ def check_cves(
     elif ecosystem in NVD_ECOSYSTEMS:
         api_key = config.get("nvd_api_key") or ""
 
-        # 1. Try OSV.dev for common Linux ecosystems first
+        # 1. Try OSV.dev for common Linux ecosystems first.
+        # Skip when versions_in_use is provided: distro package versioning (e.g. "9.2.10+dfsg-1")
+        # cannot be compared against upstream versions (e.g. "6.7.4"), causing false positives.
         osv_cves_by_id: dict[str, dict] = {}
-        for linux_eco in _OSV_LINUX_ECOSYSTEMS:
-            for entry in _osv_query_package(name, linux_eco):
-                cve_id = entry["id"]
-                if cve_id not in osv_cves_by_id:
-                    osv_cves_by_id[cve_id] = entry
+        if not versions:
+            for linux_eco in _OSV_LINUX_ECOSYSTEMS:
+                for entry in _osv_query_package(name, linux_eco):
+                    cve_id = entry["id"]
+                    if cve_id not in osv_cves_by_id:
+                        osv_cves_by_id[cve_id] = entry
 
         # 2. NVD keyword search with CPE version filtering
-        raw_items = _nvd_fetch(name, api_key)
+        nvd_keyword = _suggest_nvd_keyword(name, ecosystem)
+        raw_items = _nvd_fetch(nvd_keyword, api_key)
+        keyword_lower = nvd_keyword.lower()
         name_lower = name.lower()
         nvd_cves_by_id: dict[str, dict] = {}
         for item in raw_items:
@@ -333,7 +361,7 @@ def check_cves(
             cve_id = cve_obj.get("id", "UNKNOWN")
             descriptions = cve_obj.get("descriptions", [])
             summary = descriptions[0].get("value", "") if descriptions else ""
-            if name_lower not in summary.lower() or cve_id in nvd_cves_by_id:
+            if (keyword_lower not in summary.lower() and name_lower not in summary.lower()) or cve_id in nvd_cves_by_id:
                 continue
 
             entry: dict = {

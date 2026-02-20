@@ -4,7 +4,7 @@ import datetime
 from dataclasses import dataclass, field
 from typing import Optional
 
-from .checkers import cves, downloads, replacements, versions
+from .checkers import cves, downloads, eol, replacements, versions
 from .checkers import download_discovery
 
 
@@ -23,6 +23,7 @@ class AgentState:
     download_url: Optional[str] = None
 
     # Node outputs (None = not yet run)
+    eol_result: Optional[dict] = None
     version_result: Optional[dict] = None
     download_result: Optional[dict] = None
     cve_result: Optional[dict] = None
@@ -62,6 +63,9 @@ class PackageCheckAgent:
             download_url=download_url,
         )
 
+        # N0: EOL check (fast, no model call)
+        self._n0_eol(state)
+
         # N1: version lookup
         self._n1_version(state)
 
@@ -96,6 +100,20 @@ class PackageCheckAgent:
     # Node implementations
     # ------------------------------------------------------------------
 
+    def _n0_eol(self, state: AgentState) -> None:
+        """N0: check EOL status via endoflife.date."""
+        try:
+            state.eol_result = eol.check_eol(state.package, state.versions_in_use)
+        except Exception as exc:
+            state.errors.append(f"n0: {exc}")
+            state.eol_result = {
+                "eol": None,
+                "eol_date": None,
+                "cycle": None,
+                "latest_in_cycle": None,
+                "product": None,
+            }
+
     def _n1_version(self, state: AgentState) -> None:
         """N1: look up the latest version with retry."""
         node_id = "n1"
@@ -103,7 +121,7 @@ class PackageCheckAgent:
 
         while self._bump(state, node_id) <= state.max_attempts:
             try:
-                result = versions.get_latest_version(state.package, state.ecosystem)
+                result = versions.get_latest_version(state.package, state.ecosystem, state.versions_in_use)
             except Exception as exc:
                 state.errors.append(f"n1 attempt {state.attempts[node_id]}: {exc}")
                 continue
@@ -228,6 +246,7 @@ class PackageCheckAgent:
             "package": state.package,
             "ecosystem": state.ecosystem,
             "checked_at": datetime.datetime.utcnow().isoformat() + "Z",
+            "eol": state.eol_result,
             "version": state.version_result,
             "download": state.download_result,
             "cves": state.cve_result,

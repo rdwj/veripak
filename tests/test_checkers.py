@@ -236,3 +236,112 @@ def test_extract_tarballs_from_html_deduplication():
 def test_extract_tarballs_from_html_empty():
     result = _extract_tarballs_from_html("<html><body>No tarballs here.</body></html>")
     assert result == []
+
+
+# ---------------------------------------------------------------------------
+# eol._extract_branch
+# ---------------------------------------------------------------------------
+
+from veripak.checkers.eol import _extract_branch, _is_eol, check_eol
+
+
+@pytest.mark.parametrize("version, expected", [
+    ("6.0.1",  "6.0"),
+    ("10.2.3", "10.2"),
+    ("6.0",    "6.0"),
+    ("3",      "3"),
+    ("",       None),
+    ("abc",    None),
+])
+def test_extract_branch(version, expected):
+    assert _extract_branch(version) == expected, (
+        f"_extract_branch({version!r}) should be {expected!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# eol._is_eol
+# ---------------------------------------------------------------------------
+
+import datetime
+
+
+@pytest.mark.parametrize("eol_value, expected", [
+    (True,   True),
+    (False,  False),
+    ("2000-01-01", True),   # far in the past → EOL
+    ("2099-12-31", False),  # far in the future → supported
+    (None,   None),
+    (42,     None),         # unexpected type → None
+])
+def test_is_eol(eol_value, expected):
+    assert _is_eol(eol_value) == expected, (
+        f"_is_eol({eol_value!r}) should be {expected!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# eol.check_eol (mocked network)
+# ---------------------------------------------------------------------------
+
+from unittest.mock import patch, MagicMock
+import json as _json
+import io
+
+
+def _make_urlopen_mock(payload: list):
+    """Return a context-manager mock that yields a fake HTTP response."""
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = _json.dumps(payload).encode()
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    return mock_resp
+
+
+_FAKE_CYCLES = [
+    {"cycle": "6.0", "eol": "2024-11-12", "latest": "6.0.35"},
+    {"cycle": "8.0", "eol": "2026-11-10", "latest": "8.0.14"},
+    {"cycle": "10.0", "eol": False, "latest": "10.0.3"},
+]
+
+
+def test_check_eol_matched_cycle_eol():
+    """6.0 branch should be flagged as EOL with the correct date."""
+    with patch("urllib.request.urlopen", return_value=_make_urlopen_mock(_FAKE_CYCLES)):
+        result = check_eol("dotnet", ["6.0.15"])
+    assert result["eol"] is True, f"Expected eol=True, got {result}"
+    assert result["eol_date"] == "2024-11-12"
+    assert result["cycle"] == "6.0"
+    assert result["latest_in_cycle"] == "6.0.35"
+
+
+def test_check_eol_matched_cycle_supported():
+    """8.0 branch should be active (eol date in future → supported)."""
+    with patch("urllib.request.urlopen", return_value=_make_urlopen_mock(_FAKE_CYCLES)):
+        result = check_eol("dotnet", ["8.0.1"])
+    assert result["eol"] is False, f"Expected eol=False, got {result}"
+    assert result["cycle"] == "8.0"
+
+
+def test_check_eol_no_versions_returns_first_cycle():
+    """With no versions supplied, return the first (most recent) cycle."""
+    with patch("urllib.request.urlopen", return_value=_make_urlopen_mock(_FAKE_CYCLES)):
+        result = check_eol("dotnet", [])
+    # First entry is 6.0 which is EOL
+    assert result["cycle"] == "6.0"
+
+
+def test_check_eol_unknown_product():
+    """Unindexed product returns all-None dict."""
+    with patch("urllib.request.urlopen", side_effect=Exception("404")):
+        result = check_eol("obscure-package-xyz", ["1.0.0"])
+    assert result["eol"] is None
+    assert result["product"] is None
+
+
+def test_check_eol_no_matching_cycle():
+    """Version with no matching cycle returns product slug but None eol."""
+    with patch("urllib.request.urlopen", return_value=_make_urlopen_mock(_FAKE_CYCLES)):
+        result = check_eol("dotnet", ["99.0.0"])
+    assert result["eol"] is None
+    assert result["product"] == "dotnet"

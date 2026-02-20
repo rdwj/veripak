@@ -140,6 +140,19 @@ def cmd_check(
     click.echo()
     click.echo(f"  Package:     {package}  ({ecosystem})")
 
+    eol_result = result.get("eol") or {}
+    if eol_result.get("eol") is True:
+        eol_date = eol_result.get("eol_date") or "unknown date"
+        eol_cycle = eol_result.get("cycle", "")
+        eol_latest = eol_result.get("latest_in_cycle", "")
+        eol_suffix = f"  (cycle {eol_cycle}, latest patch: {eol_latest})" if eol_cycle else ""
+        click.echo(f"  EOL:         WARNING — end of life {eol_date}{eol_suffix}")
+    elif eol_result.get("eol") is False:
+        eol_cycle = eol_result.get("cycle", "")
+        eol_latest = eol_result.get("latest_in_cycle", "")
+        eol_suffix = f"  (cycle {eol_cycle}, latest patch: {eol_latest})" if eol_cycle else ""
+        click.echo(f"  EOL:         supported{eol_suffix}")
+
     version_str = latest_stable or "(not found)"
     method_tag = version_result.get("method", "")
     notes_tag = f"  NOTE: {version_result.get('notes')}" if version_result.get("notes") else ""

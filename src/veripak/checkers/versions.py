@@ -229,21 +229,32 @@ def check_packagist(name: str) -> tuple[Optional[str], str]:
 
 
 def check_via_model(
-    name: str, ecosystem: str
+    name: str, ecosystem: str, versions_in_use: Optional[list[str]] = None
 ) -> tuple[Optional[str], str, Optional[str], Optional[str]]:
     """Return (version, source_url, proof, notes) using Tavily + model.
 
     Queries Tavily for two searches ("latest version" + "release notes"),
     then asks the configured LLM to extract the stable version.
+    When versions_in_use is provided, searches are scoped to that branch
+    (e.g. "6.0") so the model returns the latest patch in that line.
     """
     label = ECO_LABELS.get(ecosystem, ecosystem)
 
+    # Detect branch constraint from versions_in_use (e.g. "6.0" → branch "6.0")
+    branch: Optional[str] = None
+    if versions_in_use:
+        m = re.match(r'^(\d+\.\d+)', versions_in_use[0])
+        if m:
+            branch = m.group(1)
+
+    version_query = f"{name} {branch} latest version" if branch else f"{name} latest version"
+    notes_query = f"{name} {branch} release notes" if branch else f"{name} release notes"
     try:
-        r1 = tavily.search(f"{name} latest version", max_results=3)
+        r1 = tavily.search(version_query, max_results=3)
     except RuntimeError:
         r1 = []
     try:
-        r2 = tavily.search(f"{name} release notes", max_results=3)
+        r2 = tavily.search(notes_query, max_results=3)
     except RuntimeError:
         r2 = []
 
@@ -259,8 +270,12 @@ def check_via_model(
         return None, "", None, "Tavily returned no results"
 
     search_text = "\n\n---\n\n".join(snippets)
+    if branch:
+        question = f'What is the latest stable patch release of "{name}" in the {branch}.x branch?'
+    else:
+        question = f'What is the latest stable release version of "{name}"?'
     prompt = (
-        f'What is the latest stable release version of "{name}"?\n\n'
+        f"{question}\n\n"
         f"{search_text}\n\n"
         "Reply with JSON only:\n"
         '{"version": "X.Y.Z", "source_url": "URL where you found it", "proof": "exact quote"}'
@@ -284,7 +299,7 @@ def check_via_model(
 # ---------------------------------------------------------------------------
 
 
-def get_latest_version(name: str, ecosystem: str) -> dict:
+def get_latest_version(name: str, ecosystem: str, versions_in_use: Optional[list[str]] = None) -> dict:
     """Look up the latest version for a package.
 
     Returns a dict with keys:
@@ -315,7 +330,7 @@ def get_latest_version(name: str, ecosystem: str) -> dict:
         version, source_url = check_packagist(name)
     elif ecosystem in MODEL_BASED:
         method = "tavily_model"
-        version, source_url, proof, notes = check_via_model(name, ecosystem)
+        version, source_url, proof, notes = check_via_model(name, ecosystem, versions_in_use)
     else:
         method = "skipped"
         notes = f"Unknown ecosystem: {ecosystem}"
