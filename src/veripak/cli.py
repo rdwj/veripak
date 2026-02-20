@@ -186,15 +186,23 @@ def cmd_check(
     if summary:
         click.echo()
         click.echo("  Summary:")
-        version_gap = summary.get("version_gap")
-        if version_gap:
-            click.echo(f"    Version gap:  {version_gap}")
-        eol_label = summary.get("eol_date")
-        if eol_label:
-            click.echo(f"    EOL:          {eol_label}")
-        rec = summary.get("recommendation")
-        if rec:
-            click.echo(f"    Recommend:    {rec}")
+        if summary.get("version_gap"):
+            click.echo(f"    Version gap:    {summary['version_gap']}")
+        migration = summary.get("migration_complexity")
+        breaking = summary.get("breaking_change_likely")
+        if migration:
+            breaking_tag = "  (breaking change likely)" if breaking else ""
+            click.echo(f"    Migration:      {migration}{breaking_tag}")
+        if summary.get("eol_date"):
+            click.echo(f"    EOL:            {summary['eol_date']}")
+        urgency = summary.get("urgency")
+        if urgency:
+            click.echo(f"    Urgency:        {urgency.upper()}")
+        if summary.get("recommendation"):
+            click.echo(f"    Recommend:      {summary['recommendation']}")
+        gaps = summary.get("_gaps", [])
+        if gaps:
+            click.echo(f"    (undetermined:  {', '.join(gaps)})")
 
     if replacement_result is not None:
         r_confirmed = replacement_result.get("confirmed")

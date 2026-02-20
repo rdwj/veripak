@@ -229,20 +229,24 @@ def check_packagist(name: str) -> tuple[Optional[str], str]:
 
 
 def check_via_model(
-    name: str, ecosystem: str, versions_in_use: Optional[list[str]] = None
+    name: str, ecosystem: str, versions_in_use: Optional[list[str]] = None,
+    skip_branch_scope: bool = False,
 ) -> tuple[Optional[str], str, Optional[str], Optional[str]]:
     """Return (version, source_url, proof, notes) using Tavily + model.
 
     Queries Tavily for two searches ("latest version" + "release notes"),
     then asks the configured LLM to extract the stable version.
-    When versions_in_use is provided, searches are scoped to that branch
-    (e.g. "6.0") so the model returns the latest patch in that line.
+    When versions_in_use is provided (and skip_branch_scope is False),
+    searches are scoped to that branch (e.g. "6.0") so the model returns
+    the latest patch in that line.  When skip_branch_scope is True the
+    branch constraint is ignored and the overall latest version is sought
+    — useful for EOL packages where the branch-scoped latest is irrelevant.
     """
     label = ECO_LABELS.get(ecosystem, ecosystem)
 
     # Detect branch constraint from versions_in_use (e.g. "6.0" → branch "6.0")
     branch: Optional[str] = None
-    if versions_in_use:
+    if versions_in_use and not skip_branch_scope:
         m = re.match(r'^(\d+\.\d+)', versions_in_use[0])
         if m:
             branch = m.group(1)
@@ -299,7 +303,7 @@ def check_via_model(
 # ---------------------------------------------------------------------------
 
 
-def get_latest_version(name: str, ecosystem: str, versions_in_use: Optional[list[str]] = None) -> dict:
+def get_latest_version(name: str, ecosystem: str, versions_in_use: Optional[list[str]] = None, skip_branch_scope: bool = False) -> dict:
     """Look up the latest version for a package.
 
     Returns a dict with keys:
@@ -330,7 +334,7 @@ def get_latest_version(name: str, ecosystem: str, versions_in_use: Optional[list
         version, source_url = check_packagist(name)
     elif ecosystem in MODEL_BASED:
         method = "tavily_model"
-        version, source_url, proof, notes = check_via_model(name, ecosystem, versions_in_use)
+        version, source_url, proof, notes = check_via_model(name, ecosystem, versions_in_use, skip_branch_scope=skip_branch_scope)
     else:
         method = "skipped"
         notes = f"Unknown ecosystem: {ecosystem}"

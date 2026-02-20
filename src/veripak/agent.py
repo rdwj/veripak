@@ -122,13 +122,21 @@ class PackageCheckAgent:
             }
 
     def _n1_version(self, state: AgentState) -> None:
-        """N1: look up the latest version with retry."""
+        """N1: look up the latest version with retry.
+
+        When the package is EOL, skip branch scoping so we find the overall
+        latest version rather than the latest patch in the (dead) branch.
+        """
         node_id = "n1"
         last_result: Optional[dict] = None
+        skip_branch_scope = bool((state.eol_result or {}).get("eol"))
 
         while self._bump(state, node_id) <= state.max_attempts:
             try:
-                result = versions.get_latest_version(state.package, state.ecosystem, state.versions_in_use)
+                result = versions.get_latest_version(
+                    state.package, state.ecosystem, state.versions_in_use,
+                    skip_branch_scope=skip_branch_scope,
+                )
             except Exception as exc:
                 state.errors.append(f"n1 attempt {state.attempts[node_id]}: {exc}")
                 continue
