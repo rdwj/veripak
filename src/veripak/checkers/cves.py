@@ -325,25 +325,42 @@ def _suggest_nvd_keyword(name: str, ecosystem: str) -> str:
     return name
 
 
-def _suggest_nvd_cpe(name: str, ecosystem: str) -> str:
-    """Ask the model for the NVD CPE 2.3 vendor:product string.
+# Hardcoded CPE overrides for packages where the model reliably suggests the wrong string.
+# Values are a list because some packages span multiple NVD CPE product entries.
+# The first entry in the list is used for the primary CPE query; additional entries
+# are queried in sequence and their results merged.
+_CPE_OVERRIDES: dict[str, list[str]] = {
+    # .NET 5+ dropped the "Core" branding in CPE; runtime CVEs are under "microsoft:.net",
+    # ASP.NET Core CVEs are under "microsoft:asp.net_core".
+    "dotnet": ["microsoft:.net", "microsoft:asp.net_core"],
+    "microsoft.netcore.app": ["microsoft:.net", "microsoft:asp.net_core"],
+}
 
-    Returns a string like "grafana:grafana" or "microsoft:.net_core".
-    Returns empty string on any failure or unrecognised format.
+
+def _suggest_nvd_cpe(name: str, ecosystem: str) -> list[str]:
+    """Return NVD CPE 2.3 vendor:product strings for the given package.
+
+    Returns a list (usually one entry) of strings like "grafana:grafana".
+    Checks _CPE_OVERRIDES first; falls back to asking the model.
+    Returns an empty list on any failure or unrecognised format.
     """
+    override = _CPE_OVERRIDES.get(name.lower())
+    if override:
+        return override
+
     prompt = (
         f'What is the NVD CPE 2.3 vendor:product identifier for the package "{name}" '
         f'(ecosystem: {ecosystem})? Reply with just "vendor:product", nothing else. '
-        f'Examples: "grafana:grafana", "microsoft:.net_core", "openssl:openssl", '
+        f'Examples: "grafana:grafana", "microsoft:.net", "openssl:openssl", '
         f'"linux:linux_kernel"'
     )
     try:
         cpe = model_caller.call_model(prompt).strip().strip('"').strip("'").lower()
         if cpe and re.match(r'^[a-z0-9_\-]+:[a-z0-9_.\-]+$', cpe):
-            return cpe
+            return [cpe]
     except Exception:
         pass
-    return ""
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -460,8 +477,8 @@ def check_cves(
             # affect the queried version. This avoids the keyword-search ordering problem
             # where popular packages have hundreds of CVEs and the relevant version-specific
             # ones are buried beyond the first page.
-            cpe_prefix = _suggest_nvd_cpe(name, ecosystem)
-            if cpe_prefix:
+            cpe_prefixes = _suggest_nvd_cpe(name, ecosystem)
+            for cpe_prefix in cpe_prefixes:
                 for ver in versions:
                     cpe_name = f"cpe:2.3:a:{cpe_prefix}:{ver}:*:*:*:*:*:*:*"
                     for item in _nvd_fetch_by_cpe_name(cpe_name, api_key):

@@ -418,39 +418,47 @@ from veripak.checkers.cves import _suggest_nvd_cpe
 
 
 def test_suggest_nvd_cpe_valid_response():
-    """Model returns a well-formed vendor:product string."""
+    """Model returns a well-formed vendor:product string — wrapped in a list."""
     with patch("veripak.checkers.cves.model_caller.call_model", return_value="grafana:grafana"):
         result = _suggest_nvd_cpe("grafana", "desktop-app")
-    assert result == "grafana:grafana"
+    assert result == ["grafana:grafana"]
+
+
+def test_suggest_nvd_cpe_override_map():
+    """Known package uses hardcoded override without calling the model."""
+    with patch("veripak.checkers.cves.model_caller.call_model") as mock_model:
+        result = _suggest_nvd_cpe("dotnet", "system")
+    mock_model.assert_not_called()
+    assert "microsoft:.net" in result
+    assert "microsoft:asp.net_core" in result
 
 
 def test_suggest_nvd_cpe_strips_quotes():
     """Model wraps the answer in quotes — they are stripped."""
-    with patch("veripak.checkers.cves.model_caller.call_model", return_value='"microsoft:.net_core"'):
-        result = _suggest_nvd_cpe("dotnet", "system")
-    assert result == "microsoft:.net_core"
+    with patch("veripak.checkers.cves.model_caller.call_model", return_value='"openssl:openssl"'):
+        result = _suggest_nvd_cpe("openssl", "system")
+    assert result == ["openssl:openssl"]
 
 
 def test_suggest_nvd_cpe_rejects_invalid_format():
     """Model returns something that doesn't match vendor:product pattern."""
     with patch("veripak.checkers.cves.model_caller.call_model", return_value="not a valid cpe string here"):
         result = _suggest_nvd_cpe("somepackage", "desktop-app")
-    assert result == "", f"Should return empty string, got {result!r}"
+    assert result == [], f"Should return empty list, got {result!r}"
 
 
 def test_suggest_nvd_cpe_rejects_uppercase():
-    """Uppercase letters in model response are lowercased; if still invalid, returns empty."""
+    """Uppercase letters in model response are lowercased; if still valid, returned in list."""
     with patch("veripak.checkers.cves.model_caller.call_model", return_value="GRAFANA:GRAFANA"):
         result = _suggest_nvd_cpe("grafana", "desktop-app")
-    # After .lower() → "grafana:grafana" which is valid
-    assert result == "grafana:grafana"
+    assert result == ["grafana:grafana"]
 
 
 def test_suggest_nvd_cpe_fallback_on_error():
-    """Model raises exception — returns empty string."""
+    """Model raises exception — returns empty list."""
     with patch("veripak.checkers.cves.model_caller.call_model", side_effect=RuntimeError("down")):
         result = _suggest_nvd_cpe("grafana", "desktop-app")
-    assert result == ""
+    assert result == []
 
 
 # ---------------------------------------------------------------------------
