@@ -1,8 +1,11 @@
 """Structural unit tests for checker utilities — no network calls."""
 
 import pytest
+from unittest.mock import patch, MagicMock
 
-from veripak.checkers.versions import strip_v, is_stable, _parse_json_response
+from veripak.checkers.versions import (
+    strip_v, is_stable, _parse_json_response, _version_tuple, check_pypi,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +96,52 @@ def test_parse_json_response_proof_field():
     raw = '{"version": "4.2.0", "source_url": "https://s.io", "proof": "Release 4.2.0"}'
     result = _parse_json_response(raw)
     assert result["proof"] == "Release 4.2.0"
+
+
+# ---------------------------------------------------------------------------
+# _version_tuple
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("ver, expected", [
+    ("4.2.28", (4, 2, 28)),
+    ("6.0.2", (6, 0, 2)),
+    ("v1.3.0", (1, 3, 0)),
+    ("10", (10,)),
+    ("", ()),
+])
+def test_version_tuple(ver, expected):
+    assert _version_tuple(ver) == expected, f"_version_tuple({ver!r}) should be {expected}"
+
+
+# ---------------------------------------------------------------------------
+# check_pypi — semantic version sorting (not upload time)
+# ---------------------------------------------------------------------------
+
+
+def test_check_pypi_prefers_highest_semver_over_recent_upload():
+    """An older LTS branch with a more recent upload must not beat the
+    highest semantic version.  Reproduces the Django-style scenario where
+    a 4.2.28 security patch is uploaded *after* 6.0.2."""
+    fake_pypi = {
+        "releases": {
+            # LTS branch — uploaded MORE RECENTLY
+            "4.2.28": [{"upload_time": "2026-02-19T12:00:00"}],
+            # Main branch — the true latest, uploaded earlier
+            "6.0.2":  [{"upload_time": "2026-02-10T08:00:00"}],
+            # Another LTS
+            "5.2.1":  [{"upload_time": "2026-01-15T10:00:00"}],
+            # Pre-release (should be excluded)
+            "7.0a1":  [{"upload_time": "2026-02-20T00:00:00"}],
+        }
+    }
+
+    with patch("veripak.checkers.versions._http_get_json", return_value=fake_pypi):
+        version, url = check_pypi("Django")
+
+    assert version == "6.0.2", (
+        f"Expected highest semantic version '6.0.2', got {version!r}. "
+        "check_pypi should sort by version number, not upload timestamp."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -284,7 +333,6 @@ def test_is_eol(eol_value, expected):
 # eol.check_eol (mocked network)
 # ---------------------------------------------------------------------------
 
-from unittest.mock import patch, MagicMock
 import json as _json
 import io
 

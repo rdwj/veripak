@@ -41,6 +41,14 @@ def is_stable(version: str) -> bool:
     )
 
 
+def _version_tuple(ver: str) -> tuple[int, ...]:
+    """Extract numeric parts of a version string for semantic comparison.
+
+    Examples: "4.2.28" -> (4, 2, 28), "v6.0.2" -> (6, 0, 2)
+    """
+    return tuple(int(p) for p in re.findall(r"\d+", ver))
+
+
 def _parse_json_response(text: str) -> dict:
     """Extract a JSON object from model response text.
 
@@ -110,13 +118,7 @@ def check_pypi(name: str) -> tuple[Optional[str], str]:
     if not stable:
         return None, url
 
-    def release_time(ver: str) -> str:
-        files = releases[ver]
-        if not files:
-            return ""
-        return max(f.get("upload_time", "") for f in files)
-
-    latest = max(stable, key=release_time)
+    latest = max(stable, key=_version_tuple)
     return latest, url
 
 
@@ -212,12 +214,8 @@ def check_packagist(name: str) -> tuple[Optional[str], str]:
     if not stable:
         return None, url
 
-    def ver_tuple(v: str) -> tuple:
-        parts = re.findall(r"\d+", v)
-        return tuple(int(p) for p in parts)
-
     try:
-        latest = max(stable, key=ver_tuple)
+        latest = max(stable, key=_version_tuple)
         return latest.lstrip("v"), url
     except Exception:
         return stable[-1].lstrip("v"), url
