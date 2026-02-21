@@ -11,6 +11,8 @@ A version gap is classified by how the major version number changes:
 
 When assessing a major version gap, explicitly note that upgrading is likely a breaking change and requires a migration plan, not just a package update. Do not phrase a major-version upgrade as "just upgrade to X."
 
+**EOL override**: If the version in use is end-of-life, the migration complexity should typically be at least "major" regardless of the semver gap. An EOL package is no longer receiving security patches, so even a minor-version upgrade represents a migration project — the ops team must move to a supported release branch, validate compatibility, and often update surrounding dependencies. Rate `breaking_change_likely` as true in this scenario.
+
 ## Ecosystem-specific breaking change patterns
 
 - **.NET / dotnet**: Major versions change the Target Framework Moniker (TFM). Code targeting `net6.0` must be recompiled for `net8.0`. API removals and behavioral changes are common. This is a code change, not just a runtime swap.
