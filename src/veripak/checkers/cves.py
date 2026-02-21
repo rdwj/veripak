@@ -36,6 +36,39 @@ OSV_ECOSYSTEM_MAP = {
     "php": "Packagist",
 }
 
+# Maps human-readable Java package names to their OSV/Maven groupId:artifactId identifiers.
+# OSV indexes Java packages by Maven coordinates, not display names, so "Apache Tomcat"
+# returns 0 results whereas "org.apache.tomcat:tomcat-catalina" returns 20+.
+_JAVA_OSV_NAMES: dict[str, str] = {
+    "apache tomcat": "org.apache.tomcat:tomcat-catalina",
+    "apache poi": "org.apache.poi:poi",
+    "apache struts": "org.apache.struts:struts2-core",
+    "apache activemq": "org.apache.activemq:activemq-broker",
+    "activemq": "org.apache.activemq:activemq-broker",
+    "spring boot": "org.springframework.boot:spring-boot",
+    "spring framework": "org.springframework:spring-core",
+    "log4j": "org.apache.logging.log4j:log4j-core",
+    "jackson": "com.fasterxml.jackson.core:jackson-databind",
+    "hibernate": "org.hibernate:hibernate-core",
+    "apache commons-text": "org.apache.commons:commons-text",
+    "apache commons-collections": "org.apache.commons:commons-collections4",
+    "guava": "com.google.guava:guava",
+    "gson": "com.google.code.gson:gson",
+    "netty": "io.netty:netty-handler",
+}
+
+# OSV indexes JavaScript packages by their npm package name. Map common display
+# names (which may include ".js" suffixes or spaces) to their npm identifiers.
+_JS_OSV_NAMES: dict[str, str] = {
+    "angularjs": "angular",
+    "angular.js": "angular",
+    "lodash.js": "lodash",
+    "vue.js": "vue",
+    "react.js": "react",
+    "jquery ui": "jquery-ui",
+    "moment.js": "moment",
+}
+
 # ---------------------------------------------------------------------------
 # Severity helpers
 # ---------------------------------------------------------------------------
@@ -609,13 +642,27 @@ def check_cves(
     if ecosystem in OSV_ECOSYSTEMS:
         osv_eco = OSV_ECOSYSTEM_MAP[ecosystem]
 
+        # Normalize the package name for OSV before querying:
+        # - Java: OSV indexes by Maven groupId:artifactId, not display names.
+        # - JavaScript: OSV indexes by npm package name; strip ".js" suffixes and
+        #   spaces that appear in display names but not in the npm registry.
+        osv_name = name
+        if ecosystem == "java":
+            mapped = _JAVA_OSV_NAMES.get(name.lower())
+            if mapped:
+                osv_name = mapped
+        elif ecosystem == "javascript":
+            mapped = _JS_OSV_NAMES.get(name.lower())
+            if mapped:
+                osv_name = mapped
+
         versions_cves_raw: list[dict] = []
         for ver in versions:
-            versions_cves_raw.extend(_osv_query_version(name, osv_eco, ver))
+            versions_cves_raw.extend(_osv_query_version(osv_name, osv_eco, ver))
 
         latest_cves_raw: list[dict] = []
         if latest_version:
-            latest_cves_raw = _osv_query_version(name, osv_eco, latest_version)
+            latest_cves_raw = _osv_query_version(osv_name, osv_eco, latest_version)
 
         replacement_cves_raw: list[dict] = []
         if replacement_name and replacement_name.lower() != name.lower():
@@ -761,16 +808,22 @@ def check_cves(
             "high_critical_count": 0,
         }
 
-    all_ids: set[str] = set()
+    # Deduplicate across all three lists using alias-cluster identity.
+    # We track every seen identifier (CVE ID + aliases) to skip duplicates, but
+    # count unique CVEs — not unique identifiers — so a CVE with 3 aliases is
+    # counted once, not four times.
+    seen_ids: set[str] = set()
+    unique_cve_count = 0
     high_critical = 0
     for entry in versions_cves + latest_cves + replacement_cves:
         entry_id = entry["id"]
-        if entry_id in all_ids:
+        if entry_id in seen_ids:
             continue
-        # Mark this entry and all its aliases as seen
-        all_ids.add(entry_id)
+        # New unique CVE: mark its ID and all aliases as seen
+        seen_ids.add(entry_id)
         for alias in entry.get("aliases", []):
-            all_ids.add(alias)
+            seen_ids.add(alias)
+        unique_cve_count += 1
         if entry.get("severity") in ("HIGH", "CRITICAL"):
             high_critical += 1
 
@@ -779,6 +832,6 @@ def check_cves(
         "versions_cves": versions_cves,
         "latest_cves": latest_cves,
         "replacement_cves": replacement_cves,
-        "total_count": len(all_ids),
+        "total_count": unique_cve_count,
         "high_critical_count": high_critical,
     }

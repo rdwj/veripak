@@ -52,6 +52,24 @@ def is_stable(version: str) -> bool:
     )
 
 
+# Matches Maven milestones (-M3), alpha/beta/rc/preview/snapshot/dev suffixes,
+# and dot-separated pre-release qualifiers (e.g. "1.0.alpha1").
+_PRERELEASE_RE = re.compile(
+    r'(?:[-.](?:alpha|beta|rc|dev|preview|snapshot|M\d+))',
+    re.IGNORECASE,
+)
+
+
+def is_prerelease(version: str) -> bool:
+    """Return True if the version string looks like a pre-release.
+
+    Detects common patterns such as:
+      -alpha, -beta, -rc, -RC, -M3 (Maven milestone), -SNAPSHOT,
+      -preview, -dev, .alpha1, .beta2
+    """
+    return bool(_PRERELEASE_RE.search(version))
+
+
 def _version_tuple(ver: str) -> tuple[int, ...]:
     """Extract numeric parts of a version string for semantic comparison.
 
@@ -181,8 +199,13 @@ def check_npm(name: str) -> tuple[Optional[str], str]:
     return version, url
 
 
-def check_maven(name: str) -> tuple[Optional[str], str]:
-    """Return (version, source_url) for a Maven artifact."""
+def check_maven(name: str) -> tuple[Optional[str], str, Optional[str]]:
+    """Return (version, source_url, notes) for a Maven artifact.
+
+    If Maven Central returns a pre-release (e.g. a milestone like "4.0-M3"),
+    the version is returned as-is with a notes string — there may be no stable
+    release yet.
+    """
     url = f"https://search.maven.org/solrsearch/select?q=a:{name}&rows=1&wt=json"
     data = _http_get_json(url)
     version = None
@@ -199,7 +222,8 @@ def check_maven(name: str) -> tuple[Optional[str], str]:
             if docs:
                 version = docs[0].get("latestVersion")
 
-    return version, url
+    notes = "pre-release version" if version and is_prerelease(version) else None
+    return version, url, notes
 
 
 def check_go(module: str) -> tuple[Optional[str], str]:
@@ -305,33 +329,58 @@ def check_github_releases(repo_url: str) -> tuple[Optional[str], str]:
     return version or None, html_url
 
 
-def check_release_monitoring(name: str) -> tuple[Optional[str], str]:
+def check_release_monitoring(name: str) -> tuple[Optional[str], str, Optional[str]]:
     """Query release-monitoring.org (Anitya) for the latest upstream version.
 
-    Returns (version, source_url) or (None, source_url) on failure.
+    Returns (version, source_url, notes) or (None, source_url, None) on failure.
+
+    Prefers stable_version from the Anitya record.  If the best available
+    version is still a pre-release, returns it with a notes string.
     """
     encoded = urllib.parse.quote(name, safe='')
     url = f"https://release-monitoring.org/api/v2/projects/?name={encoded}"
     data = _http_get_json(url)
     if not data:
-        return None, url
+        return None, url, None
 
     projects = data.get("items", [])
     # Find exact name match (case-insensitive)
     for project in projects:
         if project.get("name", "").lower() == name.lower():
-            version = project.get("stable_version") or project.get("version")
             project_url = f"https://release-monitoring.org/project/{project.get('id', '')}/"
-            return version, project_url
 
-    return None, url
+            # Prefer stable_version; fall back to version
+            stable = project.get("stable_version")
+            latest = project.get("version")
+
+            if stable and not is_prerelease(stable):
+                return stable, project_url, None
+
+            # stable_version is absent or itself a pre-release — try to find
+            # a non-prerelease in versions_list if the API provides it.
+            versions_list = project.get("versions", [])
+            stable_candidates = [v for v in versions_list if not is_prerelease(v)]
+            if stable_candidates:
+                # versions_list is newest-first from Anitya
+                return stable_candidates[0], project_url, None
+
+            # Last resort: return whatever version we have with a note
+            best = stable or latest
+            if best:
+                notes = "pre-release version" if is_prerelease(best) else None
+                return best, project_url, notes
+
+            return None, project_url, None
+
+    return None, url, None
 
 
-def check_repology(name: str) -> tuple[Optional[str], str]:
+def check_repology(name: str) -> tuple[Optional[str], str, Optional[str]]:
     """Query Repology for the newest upstream version.
 
-    Returns (version, source_url) or (None, source_url) on failure.
+    Returns (version, source_url, notes) or (None, source_url, None) on failure.
     Filters for entries with status=="newest" to get upstream latest.
+    If only a pre-release is available, returns it with a notes string.
     """
     encoded = name.lower().replace(" ", "-")
     url = f"https://repology.org/api/v1/project/{encoded}"
@@ -344,19 +393,22 @@ def check_repology(name: str) -> tuple[Optional[str], str]:
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except Exception:
-        return None, url
+        return None, url, None
 
     if not isinstance(data, list):
-        return None, url
+        return None, url, None
 
     # Filter for "newest" status entries (upstream latest)
     newest = [entry for entry in data if entry.get("status") == "newest"]
     if newest:
         version = newest[0].get("version")
         if version:
-            return strip_distro_suffix(version), f"https://repology.org/project/{encoded}/versions"
+            clean = strip_distro_suffix(version)
+            repology_url = f"https://repology.org/project/{encoded}/versions"
+            notes = "pre-release version" if is_prerelease(clean) else None
+            return clean, repology_url, notes
 
-    return None, url
+    return None, url, None
 
 
 # ---------------------------------------------------------------------------
@@ -471,7 +523,7 @@ def get_latest_version(name: str, ecosystem: str, versions_in_use: Optional[list
     elif ecosystem == "javascript":
         version, source_url = check_npm(name)
     elif ecosystem == "java":
-        version, source_url = check_maven(name)
+        version, source_url, notes = check_maven(name)
         if version is None:
             notes = "Maven coordinates unknown"
     elif ecosystem == "go":
@@ -490,19 +542,21 @@ def get_latest_version(name: str, ecosystem: str, versions_in_use: Optional[list
             if gh_version:
                 version, source_url = gh_version, gh_url
                 method = "github_releases"
+                if is_prerelease(gh_version):
+                    notes = "pre-release version"
 
         # 2. release-monitoring.org
         if version is None:
-            rm_version, rm_url = check_release_monitoring(name)
+            rm_version, rm_url, rm_notes = check_release_monitoring(name)
             if rm_version:
-                version, source_url = rm_version, rm_url
+                version, source_url, notes = rm_version, rm_url, rm_notes
                 method = "release_monitoring"
 
         # 3. Repology
         if version is None:
-            rep_version, rep_url = check_repology(name)
+            rep_version, rep_url, rep_notes = check_repology(name)
             if rep_version:
-                version, source_url = rep_version, rep_url
+                version, source_url, notes = rep_version, rep_url, rep_notes
                 method = "repology"
 
         # 4. Tavily + model (existing fallback)

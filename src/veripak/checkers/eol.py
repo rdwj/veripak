@@ -276,6 +276,55 @@ def check_eol(name: str, versions_in_use: list[str]) -> dict:
 # Maintenance signal heuristics (beyond endoflife.date)
 # ------------------------------------------------------------------
 
+def _check_npm_deprecated(name: str) -> Optional[dict]:
+    """Check if an npm package is deprecated via the registry API."""
+    import urllib.parse
+    encoded = urllib.parse.quote(name, safe="@/")
+    url = f"https://registry.npmjs.org/{encoded}"
+    try:
+        req = urllib.request.Request(url, headers=_HEADERS)
+        with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
+            data = json.loads(resp.read().decode())
+        latest_tag = data.get("dist-tags", {}).get("latest", "")
+        latest_info = data.get("versions", {}).get(latest_tag, {})
+        deprecated = latest_info.get("deprecated") or data.get("time", {}).get("unpublished")
+        if deprecated:
+            return {
+                "eol": True,
+                "eol_date": None,
+                "cycle": None,
+                "latest_in_cycle": None,
+                "product": None,
+                "_evidence": f"npm deprecated: {str(deprecated)[:200]}",
+            }
+    except Exception:
+        pass
+    return None
+
+
+def _check_pypi_inactive(name: str) -> Optional[dict]:
+    """Check if a PyPI package is marked as Inactive via Development Status classifiers."""
+    url = f"https://pypi.org/pypi/{name}/json"
+    try:
+        req = urllib.request.Request(url, headers=_HEADERS)
+        with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
+            data = json.loads(resp.read().decode())
+        classifiers = data.get("info", {}).get("classifiers", [])
+        for c in classifiers:
+            if "Development Status :: 7 - Inactive" in c:
+                return {
+                    "eol": True,
+                    "eol_date": None,
+                    "cycle": None,
+                    "latest_in_cycle": None,
+                    "product": None,
+                    "_evidence": f"PyPI classifier: {c}",
+                }
+    except Exception:
+        pass
+    return None
+
+
 def check_maintenance_signals(
     name: str,
     ecosystem: str,
@@ -297,11 +346,15 @@ def check_maintenance_signals(
         "product": None,
     }
 
-    # 1. Check GitHub repository status
+    # 1. Check GitHub repository status first — active maintenance is strong evidence
+    github_active = False
     if repository_url:
         gh_result = _check_github_status(repository_url)
         if gh_result and gh_result.get("eol") is True:
             return gh_result
+        elif gh_result is None:
+            # _check_github_status returns None when the repo looks healthy
+            github_active = True
 
     # 2. Check version gap — de facto EOL if many major versions behind
     if version_in_use and latest_version:
@@ -309,8 +362,25 @@ def check_maintenance_signals(
         if gap_result and gap_result.get("eol") is True:
             return gap_result
 
-    # 3. Tavily search for EOL announcements
-    tavily_result = _check_tavily_eol(name, ecosystem)
+    # 3. npm deprecation flag (JavaScript ecosystem only)
+    if ecosystem in ("javascript", "js", "node", "nodejs"):
+        npm_result = _check_npm_deprecated(name)
+        if npm_result and npm_result.get("eol") is True:
+            return npm_result
+
+    # 4. PyPI inactive classifier (Python ecosystem only)
+    if ecosystem in ("python", "py"):
+        pypi_result = _check_pypi_inactive(name)
+        if pypi_result and pypi_result.get("eol") is True:
+            return pypi_result
+
+    # 5. Tavily search for EOL announcements, scoped to the version in use.
+    #    If GitHub already confirmed the repo is actively maintained, we skip
+    #    Tavily entirely — active maintenance is stronger evidence than web search.
+    if github_active:
+        return empty
+
+    tavily_result = _check_tavily_eol(name, ecosystem, version_in_use=version_in_use)
     if tavily_result and tavily_result.get("eol") is True:
         return tavily_result
 
@@ -382,7 +452,16 @@ def _check_github_status(repository_url: str) -> Optional[dict]:
 
 
 def _check_version_gap_eol(version_in_use: str, latest_version: str) -> Optional[dict]:
-    """Infer de facto EOL when version is many major versions behind."""
+    """Infer de facto EOL when version is many major versions behind.
+
+    CalVer packages are excluded: a large year-based gap (e.g. 20.x → 25.x for
+    argon2-cffi) does not indicate the older branch is abandoned.
+    """
+    from .migration import is_calver
+
+    if is_calver(version_in_use) or is_calver(latest_version):
+        return {"eol": None}  # CalVer version gaps don't indicate EOL
+
     try:
         in_parts = [int(p) for p in re.findall(r"\d+", version_in_use)]
         latest_parts = [int(p) for p in re.findall(r"\d+", latest_version)]
@@ -407,15 +486,33 @@ def _check_version_gap_eol(version_in_use: str, latest_version: str) -> Optional
     return None
 
 
-def _check_tavily_eol(name: str, ecosystem: str) -> Optional[dict]:
-    """Search Tavily for EOL/deprecation announcements."""
+def _check_tavily_eol(
+    name: str,
+    ecosystem: str,
+    version_in_use: Optional[str] = None,
+) -> Optional[dict]:
+    """Search Tavily for EOL/deprecation announcements.
+
+    When version_in_use is provided, the search is scoped to that specific
+    version so that EOL announcements for *older* branches do not falsely flag
+    a currently-maintained version.
+    """
     try:
         from .. import tavily as tavily_client
         from .. import model_caller
     except ImportError:
         return None
 
-    query = f'"{name}" ("end of life" OR "deprecated" OR "unmaintained" OR "no longer maintained")'
+    if version_in_use:
+        query = (
+            f'"{name}" {version_in_use} '
+            f'("end of life" OR "deprecated" OR "unmaintained" OR "no longer maintained")'
+        )
+        version_context = f" version {version_in_use}"
+    else:
+        query = f'"{name}" ("end of life" OR "deprecated" OR "unmaintained" OR "no longer maintained")'
+        version_context = ""
+
     try:
         results = tavily_client.search(query, max_results=3)
     except Exception:
@@ -433,9 +530,17 @@ def _check_tavily_eol(name: str, ecosystem: str) -> Optional[dict]:
 
     search_text = "\n\n---\n\n".join(snippets)
     prompt = (
-        f'Based on these search results, is the package "{name}" ({ecosystem}) '
+        f'Based on these search results, is the package "{name}"{version_context} ({ecosystem}) '
         f'end-of-life, deprecated, or unmaintained?\n\n'
         f'{search_text}\n\n'
+        f'IMPORTANT RULES:\n'
+        f'- A large version gap alone does NOT mean the package is EOL.\n'
+        f'- The package must be officially deprecated, abandoned (no releases in 3+ years), '
+        f'or have an announced end-of-life date.\n'
+        f'- If the package is actively maintained with recent releases, it is NOT EOL even '
+        f'if the user\'s version is old.\n'
+        f'- If search results discuss EOL for a DIFFERENT version/branch than {version_in_use!r}, '
+        f'set eol=false.\n\n'
         f'Reply with JSON only: {{"eol": true/false, "eol_date": "YYYY-MM-DD or null", "evidence": "brief explanation"}}'
     )
 

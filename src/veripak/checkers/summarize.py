@@ -519,6 +519,12 @@ def generate_summary(
                 if not summary["_gaps"]:
                     del summary["_gaps"]
 
+        # Enforce complexity floor: if the LLM ignored EOL and rated complexity as
+        # "patch", override to "major" — an EOL package always requires migration.
+        if eol_flag is True and summary.get("migration_complexity") == "patch":
+            summary["migration_complexity"] = "major"
+            summary["breaking_change_likely"] = True
+
         return summary
     except Exception as exc:
         log.warning("Model pipeline failed for %s (%s), falling back to rules", pkg, exc)

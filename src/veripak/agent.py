@@ -70,6 +70,16 @@ class PackageCheckAgent:
         # N1: version lookup
         self._n1_version(state)
 
+        # Version fallback: use EOL cycle data when registry lookup fails
+        if (state.version_result or {}).get("version") is None:
+            eol_latest = (state.eol_result or {}).get("latest_in_cycle")
+            if eol_latest:
+                if state.version_result is None:
+                    state.version_result = {}
+                state.version_result["version"] = eol_latest
+                state.version_result["method"] = "eol_cycle_fallback"
+                state.version_result["notes"] = "Fell back to endoflife.date latest_in_cycle"
+
         # N0b: EOL enrichment (runs after N1 when endoflife.date had no data)
         if (state.eol_result or {}).get("eol") is None:
             self._n0b_eol_enrichment(state)

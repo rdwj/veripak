@@ -116,6 +116,13 @@ def compute_migration_complexity(
         result["migration_complexity"] = "major"
         result["breaking_change_likely"] = True
 
+    # EOL override: a package at end-of-life requires migration regardless of version gap.
+    # A "patch" result for an EOL package is misleading — the package must be replaced.
+    if eol is True and result["migration_complexity"] == "patch":
+        result["migration_complexity"] = "major"
+        result["breaking_change_likely"] = True
+        result["_eol_override"] = True
+
     result["_calver"] = False
     return result
 

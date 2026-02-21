@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 from veripak.checkers.versions import (
-    strip_v, is_stable, _parse_json_response, _version_tuple, check_pypi,
+    strip_v, is_stable, is_prerelease, _parse_json_response, _version_tuple, check_pypi,
 )
 
 
@@ -48,6 +48,42 @@ def test_strip_v(version, expected):
 def test_is_stable(version, expected):
     assert is_stable(version) == expected, (
         f"is_stable({version!r}) should be {expected}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# is_prerelease
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("version, expected", [
+    # Stable versions — must return False
+    ("1.0.0",           False),
+    ("2.1.3",           False),
+    ("6.7.4",           False),
+    ("5.15.2",          False),
+    # Maven milestones
+    ("4.0-M3",          True),
+    ("5.0-M1",          True),
+    # Alpha/beta/rc suffixes
+    ("1.0.0-alpha",     True),
+    ("1.0.0-alpha1",    True),
+    ("2.0-beta",        True),
+    ("3.0.0-rc1",       True),
+    ("3.0.0-RC2",       True),   # case-insensitive
+    # SNAPSHOT and preview
+    ("1.0.0-SNAPSHOT",  True),
+    ("2.0.0-snapshot",  True),
+    ("1.0.0-preview",   True),
+    ("1.0.0-dev",       True),
+    # Dot-separated qualifiers
+    ("5.5.0-alpha",     True),   # bctoolbox-style
+    # Edge: short stable versions should not be confused
+    ("10.0",            False),
+    ("3",               False),
+])
+def test_is_prerelease(version, expected):
+    assert is_prerelease(version) == expected, (
+        f"is_prerelease({version!r}) should be {expected}"
     )
 
 
