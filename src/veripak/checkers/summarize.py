@@ -8,7 +8,7 @@ from typing import Optional
 
 from .. import model_caller
 from .. import tavily as tavily_client
-from .migration import compute_migration_complexity, is_calver, compute_urgency_floor, urgency_at_least
+from .migration import compute_migration_complexity, compute_urgency_floor
 
 log = logging.getLogger(__name__)
 
@@ -146,7 +146,8 @@ def _format_context(
     if ver_in_use != "unknown" and latest != "unknown":
         complexity = compute_migration_complexity(ver_in_use, latest, eol_flag)
         lines.append(
-            f"\nPre-computed migration assessment: complexity={complexity['migration_complexity']}, "
+            f"\nVersion-number-based estimate (validate against your own research): "
+            f"complexity={complexity['migration_complexity']}, "
             f"breaking_change_likely={complexity['breaking_change_likely']}, "
             f"version_gap={complexity['version_gap']}"
         )
@@ -174,8 +175,8 @@ def _format_context(
             has_critical=has_critical,
         )
         lines.append(
-            f"Minimum urgency based on data: {urgency_floor}. "
-            f"You may escalate this but do not rate urgency lower than this floor."
+            f"Suggested urgency based on data signals: {urgency_floor}. "
+            f"Adjust up or down if your analysis of CVEs, EOL status, and ecosystem context warrants it."
         )
     lines.append(f"\nCVEs affecting {ver_in_use}: {total} total, {hc} HIGH or CRITICAL")
 
@@ -499,53 +500,6 @@ def generate_summary(
                 summary["_gaps"] = [g for g in summary["_gaps"] if summary.get(g) is None]
                 if not summary["_gaps"]:
                     del summary["_gaps"]
-
-            # Deterministic consistency guards: prevent the model from
-            # contradicting version-number-based complexity analysis.
-            _COMPLEXITY_RANK = {"patch": 0, "minor": 1, "major": 2, "rewrite": 3, "unknown": -1}
-
-            model_cx = summary.get("migration_complexity")
-            det_cx = precomputed["migration_complexity"]
-            model_rank = _COMPLEXITY_RANK.get(model_cx, -1)
-            det_rank = _COMPLEXITY_RANK.get(det_cx, -1)
-
-            # Don't let the model downgrade complexity below the deterministic floor
-            if det_rank > model_rank and det_rank >= 0:
-                summary["migration_complexity"] = det_cx
-
-            # Align breaking_change_likely with final complexity
-            final_cx = summary.get("migration_complexity")
-            if final_cx in ("patch", "minor"):
-                summary["breaking_change_likely"] = precomputed["breaking_change_likely"]
-            elif final_cx in ("major", "rewrite"):
-                summary["breaking_change_likely"] = True
-
-        # Enforce urgency floor
-        if ver_in_use:
-            cve_data = result.get("cves") or {}
-            has_crit = any(
-                (c.get("severity") or "").upper() == "CRITICAL"
-                for c in cve_data.get("versions_cves", [])
-            )
-            floor = compute_urgency_floor(
-                eol=eol_flag,
-                high_critical_count=cve_data.get("high_critical_count", 0),
-                total_cves=cve_data.get("total_count", 0),
-                migration_complexity=summary.get("migration_complexity") or "unknown",
-                has_critical=has_crit,
-            )
-            summary["urgency"] = urgency_at_least(summary.get("urgency"), floor)
-            # Update gaps if urgency was filled
-            if "_gaps" in summary:
-                summary["_gaps"] = [g for g in summary["_gaps"] if g != "urgency"]
-                if not summary["_gaps"]:
-                    del summary["_gaps"]
-
-        # Enforce complexity floor: if the LLM ignored EOL and rated complexity as
-        # "patch", override to "major" — an EOL package always requires migration.
-        if eol_flag is True and summary.get("migration_complexity") in ("patch", "minor"):
-            summary["migration_complexity"] = "major"
-            summary["breaking_change_likely"] = True
 
         return summary
     except Exception as exc:

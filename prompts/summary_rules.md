@@ -25,9 +25,9 @@ Assign urgency based on the combination of factors:
 - **high**: EOL without CVEs, or active support + CRITICAL CVE
 - **medium**: Active support + HIGH CVEs, or EOL without CVEs but major version gap
 - **low**: Active support + only MEDIUM/LOW CVEs
-- If the package has ANY CRITICAL-severity CVE, urgency MUST be at least "high", regardless of other factors.
-- If the package is EOL AND has a major version gap, urgency MUST be at least "medium", even without CVEs.
-- Never rate urgency as "low" when there are unpatched HIGH or CRITICAL CVEs.
+- If the package has ANY CRITICAL-severity CVE, urgency should typically be at least "high" unless analysis finds the CVE is not exploitable in the package's common usage context.
+- If the package is EOL AND has a major version gap, urgency should typically be at least "medium".
+- Rating urgency as "low" requires explicit justification when there are unpatched HIGH or CRITICAL CVEs.
 
 ## Required fields
 
