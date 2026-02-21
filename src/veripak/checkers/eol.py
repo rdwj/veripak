@@ -356,11 +356,21 @@ def check_maintenance_signals(
             # _check_github_status returns None when the repo looks healthy
             github_active = True
 
-    # 2. Check version gap — de facto EOL if many major versions behind
-    if version_in_use and latest_version:
+    # 2. Check version gap — de facto EOL if many major versions behind.
+    #    Only assert EOL when corroborated: require that GitHub was checked
+    #    and did NOT show active maintenance. Without a repo URL the gap is
+    #    advisory only — let Tavily (step 5) make the final call.
+    if version_in_use and latest_version and not github_active:
         gap_result = _check_version_gap_eol(version_in_use, latest_version)
         if gap_result and gap_result.get("eol") is True:
-            return gap_result
+            if repository_url:
+                return gap_result
+            # Demote to advisory — continue to Tavily for confirmation
+            gap_result["eol"] = None
+            gap_result["notes"] = (
+                gap_result.get("notes", "")
+                + " (version gap suggests EOL but no repo data to confirm)"
+            ).strip()
 
     # 3. npm deprecation flag (JavaScript ecosystem only)
     if ecosystem in ("javascript", "js", "node", "nodejs"):

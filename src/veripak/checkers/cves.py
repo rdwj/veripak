@@ -664,6 +664,14 @@ def check_cves(
         if latest_version:
             latest_cves_raw = _osv_query_version(osv_name, osv_eco, latest_version)
 
+        # Package-level fallback: only when we had NO versions to query at all.
+        # When version-specific queries ran but returned 0 CVEs, that means
+        # the version genuinely has no known vulnerabilities — don't override
+        # that correct result with a noisy package-level dump.
+        if (not versions_cves_raw and not latest_cves_raw
+                and not versions and not latest_version):
+            versions_cves_raw = _osv_query_package(osv_name, osv_eco)
+
         replacement_cves_raw: list[dict] = []
         if replacement_name and replacement_name.lower() != name.lower():
             replacement_cves_raw = _osv_query_package(replacement_name, osv_eco)
