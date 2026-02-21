@@ -260,7 +260,9 @@ def _run_analysis(context: str) -> Optional[str]:
             })
 
     messages.append({"role": "user", "content": _ANALYSIS_REQUEST})
-    final = model_caller.call_model_chat(messages, tools=None)
+    # Keep tools in the call signature so the API accepts the message history
+    # that may contain prior tool_calls/tool messages from earlier rounds.
+    final = model_caller.call_model_chat(messages, tools=tools)
     content = final.content or ""
 
     # Quality gate: reject empty or trivially short responses
@@ -498,6 +500,26 @@ def generate_summary(
                 if not summary["_gaps"]:
                     del summary["_gaps"]
 
+            # Deterministic consistency guards: prevent the model from
+            # contradicting version-number-based complexity analysis.
+            _COMPLEXITY_RANK = {"patch": 0, "minor": 1, "major": 2, "rewrite": 3, "unknown": -1}
+
+            model_cx = summary.get("migration_complexity")
+            det_cx = precomputed["migration_complexity"]
+            model_rank = _COMPLEXITY_RANK.get(model_cx, -1)
+            det_rank = _COMPLEXITY_RANK.get(det_cx, -1)
+
+            # Don't let the model downgrade complexity below the deterministic floor
+            if det_rank > model_rank and det_rank >= 0:
+                summary["migration_complexity"] = det_cx
+
+            # Align breaking_change_likely with final complexity
+            final_cx = summary.get("migration_complexity")
+            if final_cx in ("patch", "minor"):
+                summary["breaking_change_likely"] = precomputed["breaking_change_likely"]
+            elif final_cx in ("major", "rewrite"):
+                summary["breaking_change_likely"] = True
+
         # Enforce urgency floor
         if ver_in_use:
             cve_data = result.get("cves") or {}
@@ -521,7 +543,7 @@ def generate_summary(
 
         # Enforce complexity floor: if the LLM ignored EOL and rated complexity as
         # "patch", override to "major" — an EOL package always requires migration.
-        if eol_flag is True and summary.get("migration_complexity") == "patch":
+        if eol_flag is True and summary.get("migration_complexity") in ("patch", "minor"):
             summary["migration_complexity"] = "major"
             summary["breaking_change_likely"] = True
 

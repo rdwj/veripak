@@ -199,13 +199,71 @@ def check_npm(name: str) -> tuple[Optional[str], str]:
     return version, url
 
 
-def check_maven(name: str) -> tuple[Optional[str], str, Optional[str]]:
+def _maven_branch_latest(
+    group_id: str, artifact_id: str, target_major: int,
+) -> Optional[str]:
+    """Find the latest stable version in a specific major version line.
+
+    Uses the Maven Central ``core=gav`` endpoint which returns individual
+    version records rather than the grouped artifact summary, allowing
+    filtering by major version.
+    """
+    url = (
+        f"https://search.maven.org/solrsearch/select"
+        f"?q=g:{group_id}+AND+a:{artifact_id}&rows=200&wt=json&core=gav"
+    )
+    data = _http_get_json(url)
+    if not data:
+        return None
+    docs = data.get("response", {}).get("docs", [])
+    candidates = []
+    for doc in docs:
+        v = doc.get("v", "")
+        parts = _version_tuple(v)
+        if parts and parts[0] == target_major and not is_prerelease(v):
+            candidates.append(v)
+    if not candidates:
+        return None
+    return max(candidates, key=_version_tuple)
+
+
+def check_maven(name: str, versions_in_use: Optional[list[str]] = None) -> tuple[Optional[str], str, Optional[str]]:
     """Return (version, source_url, notes) for a Maven artifact.
 
     If Maven Central returns a pre-release (e.g. a milestone like "4.0-M3"),
     the version is returned as-is with a notes string — there may be no stable
     release yet.
+
+    When versions_in_use is provided and the latest version is in a different
+    major version line, queries for the latest version in the user's branch.
     """
+    from .cves import _JAVA_OSV_NAMES
+
+    # Try precise groupId:artifactId lookup from the coordinate mapping first
+    mapped = _JAVA_OSV_NAMES.get(name.lower())
+    if mapped and ":" in mapped:
+        g, a = mapped.split(":", 1)
+        url = f"https://search.maven.org/solrsearch/select?q=g:{g}+AND+a:{a}&rows=1&wt=json"
+        data = _http_get_json(url)
+        if data:
+            docs = data.get("response", {}).get("docs", [])
+            if docs:
+                version = docs[0].get("latestVersion")
+                if version:
+                    # Branch-scope: if user is on a different major line,
+                    # find the latest version in their branch instead.
+                    if versions_in_use:
+                        user_parts = _version_tuple(versions_in_use[0])
+                        result_parts = _version_tuple(version)
+                        if (user_parts and result_parts
+                                and user_parts[0] != result_parts[0]):
+                            branch_ver = _maven_branch_latest(g, a, user_parts[0])
+                            if branch_ver:
+                                version = branch_ver
+                    notes = "pre-release version" if is_prerelease(version) else None
+                    return version, url, notes
+
+    # Fall back to artifact-name search
     url = f"https://search.maven.org/solrsearch/select?q=a:{name}&rows=1&wt=json"
     data = _http_get_json(url)
     version = None
@@ -523,7 +581,7 @@ def get_latest_version(name: str, ecosystem: str, versions_in_use: Optional[list
     elif ecosystem == "javascript":
         version, source_url = check_npm(name)
     elif ecosystem == "java":
-        version, source_url, notes = check_maven(name)
+        version, source_url, notes = check_maven(name, versions_in_use=versions_in_use)
         if version is None:
             notes = "Maven coordinates unknown"
     elif ecosystem == "go":
