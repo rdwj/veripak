@@ -142,42 +142,9 @@ def _format_context(
     except Exception:
         pass
 
-    # Pre-computed migration complexity
-    if ver_in_use != "unknown" and latest != "unknown":
-        complexity = compute_migration_complexity(ver_in_use, latest, eol_flag)
-        lines.append(
-            f"\nVersion-number-based estimate (validate against your own research): "
-            f"complexity={complexity['migration_complexity']}, "
-            f"breaking_change_likely={complexity['breaking_change_likely']}, "
-            f"version_gap={complexity['version_gap']}"
-        )
-        if complexity.get("_calver"):
-            lines.append(
-                f"Note: This package uses calendar versioning (CalVer). "
-                f"Version {ver_in_use} -> {latest} represents a time gap, "
-                f"not a breaking API change."
-            )
-
     total = cve_data.get("total_count", 0)
     hc = cve_data.get("high_critical_count", 0)
 
-    # Pre-computed urgency floor
-    if ver_in_use != "unknown":
-        cve_list_inner = cve_data.get("versions_cves", [])
-        has_critical = any(
-            (c.get("severity") or "").upper() == "CRITICAL" for c in cve_list_inner
-        )
-        urgency_floor = compute_urgency_floor(
-            eol=eol_flag,
-            high_critical_count=hc,
-            total_cves=total,
-            migration_complexity=complexity["migration_complexity"] if ver_in_use != "unknown" and latest != "unknown" else "unknown",
-            has_critical=has_critical,
-        )
-        lines.append(
-            f"Suggested urgency based on data signals: {urgency_floor}. "
-            f"Adjust up or down if your analysis of CVEs, EOL status, and ecosystem context warrants it."
-        )
     lines.append(f"\nCVEs affecting {ver_in_use}: {total} total, {hc} HIGH or CRITICAL")
 
     cve_list = cve_data.get("versions_cves", [])
