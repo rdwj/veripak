@@ -12,6 +12,7 @@ from packaging.version import Version, InvalidVersion
 
 from .. import config
 from .. import model_caller
+from .. import tavily as tavily_client
 
 _HEADERS = {"User-Agent": "veripak/0.1"}
 _TIMEOUT = 15
@@ -622,6 +623,72 @@ def _filter_no_cpe_via_model(
 
 
 # ---------------------------------------------------------------------------
+# Security advisory page discovery
+# ---------------------------------------------------------------------------
+
+_ADVISORY_URL_KEYWORDS = {"security", "advisory", "advisories", "cve", "vulnerability", "vulnerabilities"}
+
+
+def _discover_security_advisory_cves(name: str, versions: list[str]) -> list[dict]:
+    try:
+        results = tavily_client.search(f"{name} security advisory CVE list", max_results=5)
+    except Exception:
+        return []
+
+    candidates = [
+        r for r in results
+        if any(kw in (r.get("url", "") + " " + r.get("title", "")).lower() for kw in _ADVISORY_URL_KEYWORDS)
+    ]
+    if not candidates:
+        return []
+
+    snippets = []
+    for c in candidates[:2]:
+        title = c.get("title", "")
+        content = c.get("content", "")
+        url = c.get("url", "")
+        snippets.append(f"Source: {url}\nTitle: {title}\n{content}")
+
+    combined = "\n\n---\n\n".join(snippets)
+    version_str = ", ".join(versions)
+
+    prompt = (
+        f"Below are excerpts from security advisory pages for {name}. "
+        f"Extract all CVE IDs (format: CVE-YYYY-NNNNN) that affect any of: {version_str}. "
+        f"Include a CVE if the page says it affects any of those versions or a range that includes them. "
+        f"Exclude CVEs that clearly only affect versions outside that set. "
+        f"If uncertain whether a CVE affects the version, include it. "
+        f"Return ONLY a JSON array of CVE ID strings, e.g. [\"CVE-2023-12345\"]. "
+        f"If no CVEs apply, return [].\n\n{combined}"
+    )
+
+    try:
+        raw = model_caller.call_model(prompt).strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+            raw = raw.strip()
+        cve_ids = json.loads(raw)
+        if not isinstance(cve_ids, list):
+            return []
+    except Exception:
+        return []
+
+    cve_pattern = re.compile(r"^CVE-\d{4}-\d{4,}$")
+    return [
+        {
+            "id": cve_id,
+            "severity": "UNKNOWN",
+            "summary": f"Found on {name} security advisory page",
+            "version_filter": "advisory_page",
+        }
+        for cve_id in cve_ids
+        if isinstance(cve_id, str) and cve_pattern.match(cve_id)
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -815,6 +882,13 @@ def check_cves(
             "total_count": 0,
             "high_critical_count": 0,
         }
+
+    # Advisory page discovery: only when primary sources returned few results,
+    # since OSV is authoritative for programmatic ecosystems.
+    if versions and len(versions_cves) < 3:
+        advisory_cves = _discover_security_advisory_cves(name, versions)
+        if advisory_cves:
+            versions_cves = _dedupe_cross_source(versions_cves + advisory_cves)
 
     # Deduplicate across all three lists using alias-cluster identity.
     # We track every seen identifier (CVE ID + aliases) to skip duplicates, but

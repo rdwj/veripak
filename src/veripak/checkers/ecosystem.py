@@ -33,6 +33,8 @@ _ECOSYSTEM_OVERRIDES: dict[str, str] = {
     "terraform":    "desktop-app",   # binary releases on releases.hashicorp.com
     "kubectl":      "desktop-app",   # binary releases on kubernetes.io
     "helm":         "desktop-app",   # binary releases on GitHub
+    "botan2":       "cpp",           # C++ crypto library, system-packaged but identity is cpp
+    "bottles":      "desktop-app",   # Linux app for running Windows software via Wine
 }
 
 
@@ -92,18 +94,37 @@ def _probe_go(name: str, version: Optional[str] = None) -> bool:
 
 
 def _probe_maven(name: str, version: Optional[str] = None) -> bool:
-    """Maven search always returns 200; check numFound > 0 in the JSON body."""
-    import json as _json
+    """Maven search always returns 200; check numFound > 0 in the JSON body.
 
+    Tries artifact-ID search first (exact, e.g. "poi"), then falls back to
+    free-text search (handles display names like "Apache POI").
+    """
+    import json as _json
+    import urllib.parse as _urlparse
+
+    def _maven_search(query: str) -> bool:
+        url = f"https://search.maven.org/solrsearch/select?q={query}&rows=1&wt=json"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "veripak/0.1"})
+            with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
+                body = _json.loads(resp.read())
+                return body.get("response", {}).get("numFound", 0) > 0
+        except Exception:
+            return False
+
+    # Try artifact-ID search (works for "poi", "tomcat-catalina", etc.)
     query = f"a:{name}+AND+v:{version}" if version else f"a:{name}"
-    url = f"https://search.maven.org/solrsearch/select?q={query}&rows=1&wt=json"
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "veripak/0.1"})
-        with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
-            body = _json.loads(resp.read())
-            return body.get("response", {}).get("numFound", 0) > 0
-    except Exception:
-        return False
+    if _maven_search(query):
+        return True
+
+    # Fallback: free-text search for display names with spaces
+    # (e.g. "Apache POI", "Apache Tomcat"). Skip for single-word names
+    # to avoid false positives (e.g. "botan2" matching an unrelated Java lib).
+    if " " in name:
+        encoded = _urlparse.quote(name)
+        return _maven_search(encoded)
+
+    return False
 
 
 def _probe_cpan(name: str, version: Optional[str] = None) -> bool:

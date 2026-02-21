@@ -6,6 +6,7 @@ from typing import Optional
 
 from .checkers import cves, downloads, eol, replacements, versions
 from .checkers import download_discovery
+from .checkers.ecosystem import infer_ecosystem
 
 
 @dataclass
@@ -41,7 +42,7 @@ class PackageCheckAgent:
     def run(
         self,
         package: str,
-        ecosystem: str,
+        ecosystem: Optional[str] = None,
         versions_in_use: Optional[list[str]] = None,
         replacement_name: Optional[str] = None,
         homepage: Optional[str] = None,
@@ -53,6 +54,15 @@ class PackageCheckAgent:
         skip_summary: bool = False,
     ) -> dict:
         """Run the full audit pipeline and return a consolidated result dict."""
+        if not ecosystem:
+            version_hint = (versions_in_use[0] if versions_in_use else None)
+            ecosystem = infer_ecosystem(package, version=version_hint)
+            if not ecosystem:
+                raise ValueError(
+                    f"Could not infer ecosystem for '{package}'. "
+                    "Please supply the ecosystem explicitly."
+                )
+
         state = AgentState(
             package=package,
             ecosystem=ecosystem,
@@ -114,6 +124,30 @@ class PackageCheckAgent:
         # N6: security summary (multi-turn model agent)
         if not skip_summary:
             self._n6_summary(result, state.versions_in_use)
+
+        # Feed summary discoveries back to raw blocks when they found
+        # values that the deterministic checkers missed.
+        summary = result.get("summary") or {}
+
+        # Latest version: summary may have found it via Tavily tool use
+        # even when the N1 version checker failed
+        version_block = result.get("version") or {}
+        if not version_block.get("version") and summary.get("latest_version"):
+            version_block["version"] = summary["latest_version"]
+            version_block["notes"] = (version_block.get("notes") or "") + " (backfilled from summary)"
+            version_block["notes"] = version_block["notes"].strip()
+            result["version"] = version_block
+
+        # EOL: only backfill eol=False from summary, not eol=True.
+        # When deterministic checkers return null, that means "can't determine"
+        # — if the summary asserts True, it overrides the guard's deliberate
+        # uncertainty. But False ("not EOL") is a safe low-risk backfill.
+        eol_block = result.get("eol") or {}
+        if eol_block.get("eol") is None and summary.get("eol") is False:
+            eol_block["eol"] = False
+            if summary.get("eol_date") and not eol_block.get("eol_date"):
+                eol_block["eol_date"] = summary["eol_date"]
+            result["eol"] = eol_block
 
         return result
 
