@@ -1,12 +1,16 @@
 """Multi-turn security summary agent with two-stage schema filling."""
 
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Optional
 
 from .. import model_caller
 from .. import tavily as tavily_client
+from .migration import compute_migration_complexity, is_calver, compute_urgency_floor, urgency_at_least
+
+log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Agent-level instructions loaded from prompts/summary_rules.md
@@ -72,7 +76,7 @@ SUMMARY_SCHEMA = {
     "version_in_use": None,
     "latest_version": None,
     "version_gap": None,
-    "migration_complexity": None,   # "patch" | "minor" | "major" | "unknown"
+    "migration_complexity": None,   # "patch" | "minor" | "major" | "rewrite" | "unknown"
     "breaking_change_likely": None,
     "upgrade_path": None,
     "recommendation": None,
@@ -138,8 +142,41 @@ def _format_context(
     except Exception:
         pass
 
+    # Pre-computed migration complexity
+    if ver_in_use != "unknown" and latest != "unknown":
+        complexity = compute_migration_complexity(ver_in_use, latest, eol_flag)
+        lines.append(
+            f"\nPre-computed migration assessment: complexity={complexity['migration_complexity']}, "
+            f"breaking_change_likely={complexity['breaking_change_likely']}, "
+            f"version_gap={complexity['version_gap']}"
+        )
+        if complexity.get("_calver"):
+            lines.append(
+                f"Note: This package uses calendar versioning (CalVer). "
+                f"Version {ver_in_use} -> {latest} represents a time gap, "
+                f"not a breaking API change."
+            )
+
     total = cve_data.get("total_count", 0)
     hc = cve_data.get("high_critical_count", 0)
+
+    # Pre-computed urgency floor
+    if ver_in_use != "unknown":
+        cve_list_inner = cve_data.get("versions_cves", [])
+        has_critical = any(
+            (c.get("severity") or "").upper() == "CRITICAL" for c in cve_list_inner
+        )
+        urgency_floor = compute_urgency_floor(
+            eol=eol_flag,
+            high_critical_count=hc,
+            total_cves=total,
+            migration_complexity=complexity["migration_complexity"] if ver_in_use != "unknown" and latest != "unknown" else "unknown",
+            has_critical=has_critical,
+        )
+        lines.append(
+            f"Minimum urgency based on data: {urgency_floor}. "
+            f"You may escalate this but do not rate urgency lower than this floor."
+        )
     lines.append(f"\nCVEs affecting {ver_in_use}: {total} total, {hc} HIGH or CRITICAL")
 
     cve_list = cve_data.get("versions_cves", [])
@@ -224,7 +261,14 @@ def _run_analysis(context: str) -> Optional[str]:
 
     messages.append({"role": "user", "content": _ANALYSIS_REQUEST})
     final = model_caller.call_model_chat(messages, tools=None)
-    return final.content or None
+    content = final.content or ""
+
+    # Quality gate: reject empty or trivially short responses
+    if not content.strip() or len(content.strip()) < 100:
+        log.warning("Analysis response too short (%d chars), rejecting", len(content.strip()))
+        return None
+
+    return content
 
 
 # ---------------------------------------------------------------------------
@@ -249,7 +293,7 @@ def _run_schema_mapping(analysis: str) -> dict:
         result = dict(SUMMARY_SCHEMA)
 
     _ENUM_FIELDS = {
-        "migration_complexity": {"patch", "minor", "major", "unknown"},
+        "migration_complexity": {"patch", "minor", "major", "rewrite", "unknown"},
         "urgency": {"immediate", "high", "medium", "low"},
     }
 
@@ -268,6 +312,141 @@ def _run_schema_mapping(analysis: str) -> dict:
     if gaps:
         out["_gaps"] = gaps
 
+    # Check critical field completeness; retry schema mapping if too many nulls
+    _CRITICAL_FIELDS = [
+        "urgency", "migration_complexity", "breaking_change_likely",
+        "upgrade_path", "recommendation",
+    ]
+    null_critical = [f for f in _CRITICAL_FIELDS if out.get(f) is None]
+    if len(null_critical) > 3:
+        log.info(
+            "Schema mapping left %d/5 critical fields null (%s), retrying with explicit prompt",
+            len(null_critical), ", ".join(null_critical),
+        )
+        retry_prompt = (
+            f"The following fields are still null and MUST be filled from the analysis: "
+            f"{', '.join(null_critical)}.\n\n"
+            f"Re-read the analysis carefully and extract values for these fields. "
+            f"If the analysis doesn't state them explicitly, infer them from the data "
+            f"(e.g., a major version gap implies migration_complexity='major').\n\n"
+            f"Analysis:\n{analysis}\n\n"
+            f"Reply with ONLY valid JSON matching this schema:\n{schema_json}"
+        )
+        retry_messages = [
+            {"role": "system", "content": _SYSTEM_SCHEMA},
+            {"role": "user", "content": retry_prompt},
+        ]
+        retry_msg = model_caller.call_model_chat(retry_messages, tools=None)
+        retry_raw = _strip_fences((retry_msg.content or "").strip())
+        try:
+            retry_result = json.loads(retry_raw)
+            # Merge: only fill in fields that were null
+            for f in null_critical:
+                val = retry_result.get(f)
+                if val is not None:
+                    if isinstance(val, str) and f in _ENUM_FIELDS:
+                        val = val.lower()
+                        if val not in _ENUM_FIELDS[f]:
+                            continue
+                    out[f] = val
+            # Recompute gaps
+            gaps = [k for k, v in out.items() if k != "_gaps" and v is None]
+            if gaps:
+                out["_gaps"] = gaps
+            elif "_gaps" in out:
+                del out["_gaps"]
+        except Exception:
+            pass  # Retry parse failed; keep original results
+
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Rule-based fallback (no model needed)
+# ---------------------------------------------------------------------------
+
+def _rule_based_fallback(result: dict, versions_in_use: list[str]) -> dict:
+    """Generate a minimal summary from raw audit data when the model fails.
+
+    Produces a dict with the same shape as SUMMARY_SCHEMA plus _gaps and
+    a _method indicator so callers know this was not model-generated.
+    """
+    eol_data = result.get("eol") or {}
+    version_data = result.get("version") or {}
+    cve_data = result.get("cves") or {}
+
+    ver_in_use = versions_in_use[0] if versions_in_use else None
+    latest = version_data.get("version")
+    is_eol = eol_data.get("eol")
+    eol_date = eol_data.get("eol_date")
+
+    total_cves = cve_data.get("total_count", 0)
+    high_critical = cve_data.get("high_critical_count", 0)
+
+    # Compute version gap via the deterministic module
+    gaps = compute_migration_complexity(
+        version_in_use=ver_in_use or "",
+        latest_version=latest or "",
+        eol=is_eol,
+    )
+
+    migration_complexity = gaps["migration_complexity"]
+
+    # Determine urgency floor from raw data
+    has_critical = any(
+        (c.get("severity") or "").upper() == "CRITICAL"
+        for c in cve_data.get("versions_cves", [])
+    )
+    urgency = compute_urgency_floor(
+        eol=is_eol,
+        high_critical_count=high_critical,
+        total_cves=total_cves,
+        migration_complexity=migration_complexity,
+        has_critical=has_critical,
+    )
+    breaking = gaps["breaking_change_likely"]
+
+    # Build upgrade_path and recommendation from available data
+    upgrade_path = None
+    recommendation = None
+    if latest and ver_in_use:
+        if migration_complexity in ("patch", "minor"):
+            upgrade_path = f"Update from {ver_in_use} to {latest}"
+            recommendation = (
+                f"Update to {latest} to remediate {total_cves} CVEs."
+                if total_cves > 0
+                else f"Update to {latest} to stay current."
+            )
+        elif migration_complexity in ("major", "rewrite"):
+            upgrade_path = f"Migrate from {ver_in_use} to {latest}"
+            recommendation = (
+                f"Initiate a migration project to {latest}. "
+                f"This is a breaking change — allocate engineering time for "
+                f"code changes, testing, and validation."
+            )
+            if total_cves > 0:
+                recommendation += f" {total_cves} CVEs affect the current version."
+
+    out = {
+        "total_distinct_cves": total_cves,
+        "high_or_critical_count": high_critical,
+        "eol": is_eol,
+        "eol_date": eol_date,
+        "version_in_use": ver_in_use,
+        "latest_version": latest,
+        "version_gap": gaps["version_gap"],
+        "migration_complexity": migration_complexity,
+        "breaking_change_likely": breaking,
+        "upgrade_path": upgrade_path,
+        "recommendation": recommendation,
+        "urgency": urgency,
+        "_method": "rule_based",
+    }
+
+    null_fields = [k for k in SUMMARY_SCHEMA if out.get(k) is None]
+    if null_fields:
+        out["_gaps"] = null_fields
+
     return out
 
 
@@ -284,7 +463,9 @@ def generate_summary(
     Stage 1: free-form analyst thread (with Tavily tool access).
     Stage 2: schema mapping in a fresh conversation (no tools).
 
-    Returns None if both stages fail. Null schema fields are listed in _gaps.
+    Falls back to rule-based summary if the model pipeline fails.
+    Returns None only if both the model and fallback fail.
+    Null schema fields are listed in _gaps.
     """
     pkg = result.get("package", "")
     ecosystem = result.get("ecosystem", "")
@@ -295,7 +476,56 @@ def generate_summary(
     try:
         analysis = _run_analysis(context)
         if not analysis:
-            return {"_error": "analysis stage returned no content", "_gaps": list(SUMMARY_SCHEMA.keys())}
-        return _run_schema_mapping(analysis)
+            log.warning("Analysis returned no content for %s, falling back to rules", pkg)
+            return _rule_based_fallback(result, versions_in_use)
+        summary = _run_schema_mapping(analysis)
+
+        # Fill null migration fields from pre-computed deterministic values
+        ver_in_use = versions_in_use[0] if versions_in_use else ""
+        latest = (result.get("version") or {}).get("version") or ""
+        eol_flag = (result.get("eol") or {}).get("eol")
+        if ver_in_use and latest and ver_in_use != "unknown" and latest != "unknown":
+            precomputed = compute_migration_complexity(ver_in_use, latest, eol_flag)
+            if summary.get("migration_complexity") is None:
+                summary["migration_complexity"] = precomputed["migration_complexity"]
+            if summary.get("breaking_change_likely") is None:
+                summary["breaking_change_likely"] = precomputed["breaking_change_likely"]
+            if summary.get("version_gap") is None:
+                summary["version_gap"] = precomputed["version_gap"]
+            # Remove now-filled fields from _gaps
+            if "_gaps" in summary:
+                summary["_gaps"] = [g for g in summary["_gaps"] if summary.get(g) is None]
+                if not summary["_gaps"]:
+                    del summary["_gaps"]
+
+        # Enforce urgency floor
+        if ver_in_use:
+            cve_data = result.get("cves") or {}
+            has_crit = any(
+                (c.get("severity") or "").upper() == "CRITICAL"
+                for c in cve_data.get("versions_cves", [])
+            )
+            floor = compute_urgency_floor(
+                eol=eol_flag,
+                high_critical_count=cve_data.get("high_critical_count", 0),
+                total_cves=cve_data.get("total_count", 0),
+                migration_complexity=summary.get("migration_complexity") or "unknown",
+                has_critical=has_crit,
+            )
+            summary["urgency"] = urgency_at_least(summary.get("urgency"), floor)
+            # Update gaps if urgency was filled
+            if "_gaps" in summary:
+                summary["_gaps"] = [g for g in summary["_gaps"] if g != "urgency"]
+                if not summary["_gaps"]:
+                    del summary["_gaps"]
+
+        return summary
     except Exception as exc:
-        return {"_error": f"{type(exc).__name__}: {exc}", "_gaps": list(SUMMARY_SCHEMA.keys())}
+        log.warning("Model pipeline failed for %s (%s), falling back to rules", pkg, exc)
+        try:
+            return _rule_based_fallback(result, versions_in_use)
+        except Exception as fb_exc:
+            return {
+                "_error": f"model: {type(exc).__name__}: {exc}; fallback: {fb_exc}",
+                "_gaps": list(SUMMARY_SCHEMA.keys()),
+            }

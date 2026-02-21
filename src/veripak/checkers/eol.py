@@ -270,3 +270,193 @@ def check_eol(name: str, versions_in_use: list[str]) -> dict:
         "latest_in_cycle": matched_cycle.get("latest"),
         "product": slug,
     }
+
+
+# ------------------------------------------------------------------
+# Maintenance signal heuristics (beyond endoflife.date)
+# ------------------------------------------------------------------
+
+def check_maintenance_signals(
+    name: str,
+    ecosystem: str,
+    repository_url: Optional[str] = None,
+    latest_version_date: Optional[str] = None,
+    version_in_use: Optional[str] = None,
+    latest_version: Optional[str] = None,
+) -> dict:
+    """Check maintenance signals beyond endoflife.date.
+
+    Returns a dict with the same shape as check_eol() output, or an empty
+    result dict if no signal was detected.
+    """
+    empty: dict = {
+        "eol": None,
+        "eol_date": None,
+        "cycle": None,
+        "latest_in_cycle": None,
+        "product": None,
+    }
+
+    # 1. Check GitHub repository status
+    if repository_url:
+        gh_result = _check_github_status(repository_url)
+        if gh_result and gh_result.get("eol") is True:
+            return gh_result
+
+    # 2. Check version gap — de facto EOL if many major versions behind
+    if version_in_use and latest_version:
+        gap_result = _check_version_gap_eol(version_in_use, latest_version)
+        if gap_result and gap_result.get("eol") is True:
+            return gap_result
+
+    # 3. Tavily search for EOL announcements
+    tavily_result = _check_tavily_eol(name, ecosystem)
+    if tavily_result and tavily_result.get("eol") is True:
+        return tavily_result
+
+    return empty
+
+
+def _check_github_status(repository_url: str) -> Optional[dict]:
+    """Check GitHub API for archived/abandoned status."""
+    m = re.match(r'https?://github\.com/([^/]+/[^/]+?)(?:\.git)?/?$', repository_url)
+    if not m:
+        return None
+
+    owner_repo = m.group(1)
+    url = f"https://api.github.com/repos/{owner_repo}"
+    try:
+        req = urllib.request.Request(url, headers={**_HEADERS, "Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
+            data = json.loads(resp.read().decode())
+    except Exception:
+        return None
+
+    # Check if archived
+    if data.get("archived", False):
+        return {
+            "eol": True,
+            "eol_date": None,
+            "cycle": None,
+            "latest_in_cycle": None,
+            "product": None,
+            "_evidence": f"GitHub repository {owner_repo} is archived",
+        }
+
+    # Check last push date — if no commits in 3+ years, likely abandoned
+    pushed_at = data.get("pushed_at", "")
+    if pushed_at:
+        try:
+            last_push = datetime.datetime.fromisoformat(pushed_at.rstrip("Z"))
+            years_since = (datetime.datetime.utcnow() - last_push).days / 365.25
+            if years_since >= 3:
+                return {
+                    "eol": True,
+                    "eol_date": None,
+                    "cycle": None,
+                    "latest_in_cycle": None,
+                    "product": None,
+                    "_evidence": f"No commits in {years_since:.1f} years (last push: {pushed_at[:10]})",
+                }
+        except Exception:
+            pass
+
+    # Check description for deprecation keywords
+    description = (data.get("description") or "").lower()
+    deprecation_keywords = [
+        "deprecated", "unmaintained", "archived",
+        "no longer maintained", "end of life", "eol", "abandoned",
+    ]
+    for keyword in deprecation_keywords:
+        if keyword in description:
+            return {
+                "eol": True,
+                "eol_date": None,
+                "cycle": None,
+                "latest_in_cycle": None,
+                "product": None,
+                "_evidence": f"GitHub description contains '{keyword}'",
+            }
+
+    return None
+
+
+def _check_version_gap_eol(version_in_use: str, latest_version: str) -> Optional[dict]:
+    """Infer de facto EOL when version is many major versions behind."""
+    try:
+        in_parts = [int(p) for p in re.findall(r"\d+", version_in_use)]
+        latest_parts = [int(p) for p in re.findall(r"\d+", latest_version)]
+    except Exception:
+        return None
+
+    if not in_parts or not latest_parts:
+        return None
+
+    major_gap = latest_parts[0] - in_parts[0]
+    # If 5+ major versions behind, the branch is de facto unsupported
+    if major_gap >= 5:
+        return {
+            "eol": True,
+            "eol_date": None,
+            "cycle": None,
+            "latest_in_cycle": None,
+            "product": None,
+            "_evidence": f"Version {version_in_use} is {major_gap} major versions behind {latest_version}",
+        }
+
+    return None
+
+
+def _check_tavily_eol(name: str, ecosystem: str) -> Optional[dict]:
+    """Search Tavily for EOL/deprecation announcements."""
+    try:
+        from .. import tavily as tavily_client
+        from .. import model_caller
+    except ImportError:
+        return None
+
+    query = f'"{name}" ("end of life" OR "deprecated" OR "unmaintained" OR "no longer maintained")'
+    try:
+        results = tavily_client.search(query, max_results=3)
+    except Exception:
+        return None
+
+    if not results:
+        return None
+
+    # Ask the model to extract structured EOL info from search results
+    snippets = []
+    for r in results[:3]:
+        title = r.get("title", "")
+        content = r.get("content", "")[:300]
+        snippets.append(f"Title: {title}\nContent: {content}")
+
+    search_text = "\n\n---\n\n".join(snippets)
+    prompt = (
+        f'Based on these search results, is the package "{name}" ({ecosystem}) '
+        f'end-of-life, deprecated, or unmaintained?\n\n'
+        f'{search_text}\n\n'
+        f'Reply with JSON only: {{"eol": true/false, "eol_date": "YYYY-MM-DD or null", "evidence": "brief explanation"}}'
+    )
+
+    try:
+        raw = model_caller.call_model(prompt)
+        # Parse JSON response
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = re.sub(r"^```[a-z]*\n?", "", raw)
+            raw = re.sub(r"\n?```$", "", raw).strip()
+        data = json.loads(raw)
+        if data.get("eol") is True:
+            return {
+                "eol": True,
+                "eol_date": data.get("eol_date"),
+                "cycle": None,
+                "latest_in_cycle": None,
+                "product": None,
+                "_evidence": data.get("evidence", "Tavily search found EOL evidence"),
+            }
+    except Exception:
+        pass
+
+    return None

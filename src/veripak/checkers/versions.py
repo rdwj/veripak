@@ -2,6 +2,7 @@
 
 import json
 import re
+import urllib.parse
 import urllib.request
 from typing import Optional
 
@@ -18,6 +19,16 @@ ECO_LABELS = {
     "system": "Linux system package",
     "desktop-app": "desktop application",
     "driver": "hardware driver",
+}
+
+# Disambiguation data for packages with short or ambiguous names.
+# Used to improve Tavily queries and model extraction accuracy.
+_DISAMBIGUATION: dict[str, dict] = {
+    "b64": {"ecosystem": "c", "full_name": "b64 C base64 encoding library", "not": ["R", "CRAN", "Python"]},
+    "blt": {"ecosystem": "c", "full_name": "BLT Tcl/Tk extension toolkit", "not": ["Windows", "RDP", "BPF", "Linux kernel"]},
+    "argon2": {"ecosystem": "c", "full_name": "argon2 C reference implementation (password hashing)", "not": ["npm", "node", "Python", "pip"]},
+    "lz4": {"ecosystem": "c", "full_name": "LZ4 C compression library", "not": ["Python", "Java", "npm"]},
+    "zstd": {"ecosystem": "c", "full_name": "Zstandard C compression library by Facebook", "not": ["Python", "npm"]},
 }
 
 PROGRAMMATIC = {"python", "javascript", "java", "go", "dotnet", "perl", "php"}
@@ -84,6 +95,43 @@ def _parse_json_response(text: str) -> dict:
             pass
 
     return {}
+
+
+def strip_distro_suffix(version: str) -> str:
+    """Remove common Linux distribution packaging suffixes from a version string.
+
+    Handles:
+    - Epoch prefix: "1:3.7.0" -> "3.7.0"
+    - Debian DFSG: "9.2.10+dfsg-1" -> "9.2.10"
+    - Fedora/RHEL: "3.7.0-1.fc39" or "3.7.0-1.el9" -> "3.7.0"
+    - Debian/Ubuntu revision: "3.7.0-4" or "3.7.0-4.1" -> "3.7.0"
+
+    Preserves legitimate version components like pre-release tags.
+    """
+    if not version:
+        return version
+
+    # Strip epoch prefix (e.g., "1:3.7.0" -> "3.7.0")
+    if re.match(r'^\d+:', version):
+        version = version.split(':', 1)[1]
+
+    # Strip +dfsg suffix and everything after
+    version = re.sub(r'\+dfsg.*$', '', version)
+
+    # Strip Fedora/RHEL suffixes: -N.fcNN or -N.elN
+    version = re.sub(r'-\d+\.(fc|el)\d+.*$', '', version)
+
+    # Strip Debian/Ubuntu revision: -N or -N.N at end
+    # But only if the part before the dash looks like a complete version
+    # Don't strip things like "2.0.0-beta1" or "1.0.0-rc1"
+    m = re.match(r'^(.+\.\d+)-(\d+)(\.\d+)*$', version)
+    if m:
+        base = m.group(1)
+        # Verify the base looks like a real version (has at least one dot with digits)
+        if re.match(r'^\d+(\.\d+)+$', base):
+            version = base
+
+    return version
 
 
 # ---------------------------------------------------------------------------
@@ -222,6 +270,96 @@ def check_packagist(name: str) -> tuple[Optional[str], str]:
 
 
 # ---------------------------------------------------------------------------
+# Structured source lookups (for non-programmatic ecosystems)
+# ---------------------------------------------------------------------------
+
+
+def check_github_releases(repo_url: str) -> tuple[Optional[str], str]:
+    """Query GitHub API for the latest release version.
+
+    Returns (version, source_url) or (None, source_url) on failure.
+    """
+    if not repo_url:
+        return None, ""
+
+    # Extract owner/repo from URL
+    m = re.match(r'https?://github\.com/([^/]+/[^/]+?)(?:\.git)?/?$', repo_url)
+    if not m:
+        return None, repo_url
+
+    owner_repo = m.group(1)
+    api_url = f"https://api.github.com/repos/{owner_repo}/releases/latest"
+    data = _http_get_json(api_url)
+    if not data:
+        # Try tags endpoint as fallback
+        tags_url = f"https://api.github.com/repos/{owner_repo}/tags?per_page=1"
+        tags = _http_get_json(tags_url)
+        if tags and isinstance(tags, list) and tags:
+            tag_name = tags[0].get("name", "")
+            return strip_v(tag_name) or None, f"https://github.com/{owner_repo}/tags"
+        return None, api_url
+
+    tag = data.get("tag_name", "")
+    version = strip_v(tag)
+    html_url = data.get("html_url", api_url)
+    return version or None, html_url
+
+
+def check_release_monitoring(name: str) -> tuple[Optional[str], str]:
+    """Query release-monitoring.org (Anitya) for the latest upstream version.
+
+    Returns (version, source_url) or (None, source_url) on failure.
+    """
+    encoded = urllib.parse.quote(name, safe='')
+    url = f"https://release-monitoring.org/api/v2/projects/?name={encoded}"
+    data = _http_get_json(url)
+    if not data:
+        return None, url
+
+    projects = data.get("items", [])
+    # Find exact name match (case-insensitive)
+    for project in projects:
+        if project.get("name", "").lower() == name.lower():
+            version = project.get("stable_version") or project.get("version")
+            project_url = f"https://release-monitoring.org/project/{project.get('id', '')}/"
+            return version, project_url
+
+    return None, url
+
+
+def check_repology(name: str) -> tuple[Optional[str], str]:
+    """Query Repology for the newest upstream version.
+
+    Returns (version, source_url) or (None, source_url) on failure.
+    Filters for entries with status=="newest" to get upstream latest.
+    """
+    encoded = name.lower().replace(" ", "-")
+    url = f"https://repology.org/api/v1/project/{encoded}"
+
+    # Repology requires a more specific User-Agent
+    try:
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "veripak/0.1 (package auditor)"}
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None, url
+
+    if not isinstance(data, list):
+        return None, url
+
+    # Filter for "newest" status entries (upstream latest)
+    newest = [entry for entry in data if entry.get("status") == "newest"]
+    if newest:
+        version = newest[0].get("version")
+        if version:
+            return strip_distro_suffix(version), f"https://repology.org/project/{encoded}/versions"
+
+    return None, url
+
+
+# ---------------------------------------------------------------------------
 # Tavily + model fallback
 # ---------------------------------------------------------------------------
 
@@ -242,6 +380,14 @@ def check_via_model(
     """
     label = ECO_LABELS.get(ecosystem, ecosystem)
 
+    # Disambiguation for packages with short or ambiguous names
+    disambig = _DISAMBIGUATION.get(name.lower())
+    if disambig:
+        label = disambig.get("full_name", label)
+        negative_terms = disambig.get("not", [])
+    else:
+        negative_terms = []
+
     # Detect branch constraint from versions_in_use (e.g. "6.0" → branch "6.0")
     branch: Optional[str] = None
     if versions_in_use and not skip_branch_scope:
@@ -249,8 +395,8 @@ def check_via_model(
         if m:
             branch = m.group(1)
 
-    version_query = f"{name} {branch} latest version" if branch else f"{name} latest version"
-    notes_query = f"{name} {branch} release notes" if branch else f"{name} release notes"
+    version_query = f"{name} {label} {branch} latest version" if branch else f"{name} {label} latest version"
+    notes_query = f"{name} {label} {branch} release notes" if branch else f"{name} {label} release notes"
     try:
         r1 = tavily.search(version_query, max_results=3)
     except RuntimeError:
@@ -283,6 +429,12 @@ def check_via_model(
         '{"version": "X.Y.Z", "source_url": "URL where you found it", "proof": "exact quote"}'
     )
 
+    # Add ecosystem context to help the model ignore wrong-ecosystem results
+    ecosystem_hint = f"\nThe package is a {ECO_LABELS.get(ecosystem, ecosystem)}."
+    if negative_terms:
+        ecosystem_hint += f" Ignore results for: {', '.join(negative_terms)} packages."
+    prompt += ecosystem_hint
+
     try:
         raw = model_caller.call_model(prompt)
     except Exception as exc:
@@ -301,7 +453,7 @@ def check_via_model(
 # ---------------------------------------------------------------------------
 
 
-def get_latest_version(name: str, ecosystem: str, versions_in_use: Optional[list[str]] = None, skip_branch_scope: bool = False) -> dict:
+def get_latest_version(name: str, ecosystem: str, versions_in_use: Optional[list[str]] = None, skip_branch_scope: bool = False, repository_url: Optional[str] = None) -> dict:
     """Look up the latest version for a package.
 
     Returns a dict with keys:
@@ -331,14 +483,43 @@ def get_latest_version(name: str, ecosystem: str, versions_in_use: Optional[list
     elif ecosystem == "php":
         version, source_url = check_packagist(name)
     elif ecosystem in MODEL_BASED:
-        method = "tavily_model"
-        version, source_url, proof, notes = check_via_model(name, ecosystem, versions_in_use, skip_branch_scope=skip_branch_scope)
+        # Try structured sources first, then fall back to Tavily+model
+        # 1. GitHub Releases (if repository_url known)
+        if repository_url:
+            gh_version, gh_url = check_github_releases(repository_url)
+            if gh_version:
+                version, source_url = gh_version, gh_url
+                method = "github_releases"
+
+        # 2. release-monitoring.org
+        if version is None:
+            rm_version, rm_url = check_release_monitoring(name)
+            if rm_version:
+                version, source_url = rm_version, rm_url
+                method = "release_monitoring"
+
+        # 3. Repology
+        if version is None:
+            rep_version, rep_url = check_repology(name)
+            if rep_version:
+                version, source_url = rep_version, rep_url
+                method = "repology"
+
+        # 4. Tavily + model (existing fallback)
+        if version is None:
+            method = "tavily_model"
+            version, source_url, proof, notes = check_via_model(
+                name, ecosystem, versions_in_use, skip_branch_scope=skip_branch_scope,
+            )
     else:
         method = "skipped"
         notes = f"Unknown ecosystem: {ecosystem}"
 
+    # Clean version: strip 'v' prefix and distro packaging suffixes
+    clean_version = strip_distro_suffix(strip_v(version)) if version else None
+
     return {
-        "version": strip_v(version) if version else None,
+        "version": clean_version,
         "source_url": source_url,
         "method": method,
         "proof": proof,

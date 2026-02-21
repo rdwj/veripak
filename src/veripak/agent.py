@@ -70,6 +70,10 @@ class PackageCheckAgent:
         # N1: version lookup
         self._n1_version(state)
 
+        # N0b: EOL enrichment (runs after N1 when endoflife.date had no data)
+        if (state.eol_result or {}).get("eol") is None:
+            self._n0b_eol_enrichment(state)
+
         # N2+N3: download discovery and validation with loop-back.
         # N2 tries to find a URL (useful for non-programmatic ecosystems).
         # N3 validates the download; for programmatic ecosystems (python, js)
@@ -121,6 +125,35 @@ class PackageCheckAgent:
                 "product": None,
             }
 
+    def _n0b_eol_enrichment(self, state: AgentState) -> None:
+        """N0b: enrich EOL data using maintenance signal heuristics.
+
+        Only runs when endoflife.date returned eol=None (product not found
+        or no matching cycle). Uses GitHub status, version gap analysis,
+        and Tavily search as supplementary signals.
+        """
+        latest_version = (state.version_result or {}).get("version")
+        version_in_use = state.versions_in_use[0] if state.versions_in_use else None
+
+        try:
+            enriched = eol.check_maintenance_signals(
+                name=state.package,
+                ecosystem=state.ecosystem,
+                repository_url=state.repository_url,
+                version_in_use=version_in_use,
+                latest_version=latest_version,
+            )
+            if enriched.get("eol") is not None:
+                # Merge enriched data, preserving any product slug from N0
+                state.eol_result = {
+                    **state.eol_result,
+                    "eol": enriched["eol"],
+                    "eol_date": enriched.get("eol_date") or state.eol_result.get("eol_date"),
+                    "_evidence": enriched.get("_evidence"),
+                }
+        except Exception as exc:
+            state.errors.append(f"n0b: {exc}")
+
     def _n1_version(self, state: AgentState) -> None:
         """N1: look up the latest version with retry.
 
@@ -136,6 +169,7 @@ class PackageCheckAgent:
                 result = versions.get_latest_version(
                     state.package, state.ecosystem, state.versions_in_use,
                     skip_branch_scope=skip_branch_scope,
+                    repository_url=state.repository_url,
                 )
             except Exception as exc:
                 state.errors.append(f"n1 attempt {state.attempts[node_id]}: {exc}")
@@ -255,30 +289,29 @@ class PackageCheckAgent:
         state.attempts[node_id] = state.attempts.get(node_id, 0) + 1
         return state.attempts[node_id]
 
-    _SUMMARY_RETRY_DELAY = 3  # seconds between summary retry attempts
-
     def _n6_summary(self, result: dict, versions_in_use: list[str]) -> None:
         """N6: generate a security summary via multi-turn model agent.
 
-        Retries once on failure with a delay, since summary model calls
-        can fail under concurrent load (e.g. multiple veripak runs
-        sharing an Ollama instance).
+        Retries up to 3 times with exponential backoff (3s, 6s, 12s),
+        since summary model calls can fail under concurrent load
+        (e.g. multiple veripak runs sharing an Ollama instance).
         """
         import time
         from .checkers import summarize
 
-        for attempt in range(2):
+        summary = None
+        for attempt in range(3):
             summary = summarize.generate_summary(result, versions_in_use=versions_in_use)
             if summary is not None and "_error" not in summary:
                 result["summary"] = summary
                 return
-            # First attempt failed — log the error, wait, then retry
-            if attempt == 0:
-                error_msg = summary.get("_error", "unknown") if summary else "returned None"
-                result.setdefault("_agent", {}).setdefault("errors", []).append(
-                    f"n6 attempt 1: {error_msg}"
-                )
-                time.sleep(self._SUMMARY_RETRY_DELAY)
+            error_msg = summary.get("_error", "unknown") if summary else "returned None"
+            result.setdefault("_agent", {}).setdefault("errors", []).append(
+                f"n6 attempt {attempt + 1}: {error_msg}"
+            )
+            if attempt < 2:
+                delay = 3 * (2 ** attempt)  # 3, 6, 12
+                time.sleep(delay)
 
         # Store whatever we got, even if it has an _error
         if summary is not None:

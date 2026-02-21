@@ -137,6 +137,7 @@ def _osv_normalise(vulns: list) -> list[dict]:
             "id": v.get("id", "UNKNOWN"),
             "severity": _extract_osv_severity(v),
             "summary": v.get("summary", ""),
+            "aliases": v.get("aliases", []),
         }
         for v in vulns
     ]
@@ -167,6 +168,83 @@ def _dedupe(cves: list[dict]) -> list[dict]:
         if c["id"] not in seen:
             seen.add(c["id"])
             result.append(c)
+    return result
+
+
+def _dedupe_cross_source(cves: list[dict]) -> list[dict]:
+    """Deduplicate CVEs across sources using alias relationships.
+
+    Groups CVEs that share any ID or alias into clusters, then keeps
+    the best entry from each cluster (preferring CVE-prefixed IDs over
+    GHSA, and entries with severity data).
+    """
+    if not cves:
+        return cves
+
+    # Build union-find structure based on ID + aliases
+    # Map every known identifier to the list index
+    id_to_indices: dict[str, list[int]] = {}
+    for i, entry in enumerate(cves):
+        entry_id = entry.get("id", "")
+        all_ids = [entry_id] + entry.get("aliases", [])
+        for aid in all_ids:
+            if aid:
+                id_to_indices.setdefault(aid, []).append(i)
+
+    # Group indices that share any identifier
+    visited: set[int] = set()
+    clusters: list[list[int]] = []
+
+    for i in range(len(cves)):
+        if i in visited:
+            continue
+        # BFS to find all connected indices
+        cluster: list[int] = []
+        queue = [i]
+        while queue:
+            idx = queue.pop()
+            if idx in visited:
+                continue
+            visited.add(idx)
+            cluster.append(idx)
+            # Find all IDs for this entry
+            entry = cves[idx]
+            all_ids = [entry.get("id", "")] + entry.get("aliases", [])
+            for aid in all_ids:
+                if aid:
+                    for linked_idx in id_to_indices.get(aid, []):
+                        if linked_idx not in visited:
+                            queue.append(linked_idx)
+        clusters.append(cluster)
+
+    # Pick the best entry from each cluster
+    result: list[dict] = []
+    for cluster in clusters:
+        entries = [cves[i] for i in cluster]
+        # Prefer CVE-prefixed IDs over GHSA
+        best = entries[0]
+        for entry in entries:
+            entry_id = entry.get("id", "")
+            best_id = best.get("id", "")
+            # Prefer CVE- prefix
+            if entry_id.startswith("CVE-") and not best_id.startswith("CVE-"):
+                best = entry
+            # Prefer entries with known severity
+            elif entry.get("severity", "UNKNOWN") != "UNKNOWN" and best.get("severity", "UNKNOWN") == "UNKNOWN":
+                best = entry
+
+        # Collect all aliases from the cluster
+        all_aliases: set[str] = set()
+        for entry in entries:
+            all_aliases.add(entry.get("id", ""))
+            all_aliases.update(entry.get("aliases", []))
+        all_aliases.discard(best.get("id", ""))
+        all_aliases.discard("")
+
+        merged = dict(best)
+        merged["aliases"] = sorted(all_aliases)
+        result.append(merged)
+
     return result
 
 
@@ -303,6 +381,39 @@ def _cve_affects_versions(cve_item: dict, versions: list[str]) -> bool:
     return False
 
 
+def _cpe_matches_package(cve_item: dict, name: str, ecosystem: str) -> bool:
+    """Check if any CPE product in the CVE matches the target package.
+
+    Returns True if the CVE has no CPE data (conservative) or if any CPE
+    product string matches the target package name.
+    """
+    configurations = cve_item.get("cve", {}).get("configurations", [])
+    if not configurations:
+        return True  # No CPE data — can't filter, keep it
+
+    name_lower = name.lower().replace("-", "_").replace(" ", "_")
+    name_variants = {name_lower, name.lower(), name.lower().replace("_", "-")}
+
+    for config_entry in configurations:
+        for node in config_entry.get("nodes", []):
+            for cpe_match in node.get("cpeMatch", []):
+                criteria = cpe_match.get("criteria", "")
+                # CPE 2.3 format: cpe:2.3:a:vendor:product:version:...
+                parts = criteria.split(":")
+                if len(parts) >= 5:
+                    vendor = parts[3].lower()
+                    product = parts[4].lower()
+                    # Check product match (allow for underscores/hyphens)
+                    product_variants = {product, product.replace("_", "-"), product.replace("-", "_")}
+                    if name_variants & product_variants:
+                        return True
+                    # Also check if name is a substring of vendor:product
+                    if name_lower in product or product in name_lower:
+                        return True
+
+    return False
+
+
 # ---------------------------------------------------------------------------
 # NVD model helpers
 # ---------------------------------------------------------------------------
@@ -310,10 +421,19 @@ def _cve_affects_versions(cve_item: dict, versions: list[str]) -> bool:
 
 def _suggest_nvd_keyword(name: str, ecosystem: str) -> str:
     """Ask the model for a precise NVD search keyword. Falls back to name on any failure."""
+    eco_label = {
+        "c": "C library",
+        "cpp": "C++ library",
+        "system": "Linux system package",
+        "desktop-app": "desktop application",
+        "driver": "hardware driver",
+    }.get(ecosystem, ecosystem)
+
     prompt = (
         f'What is the best NVD (National Vulnerability Database) keywordSearch term '
-        f'for the package "{name}" (ecosystem: {ecosystem})? '
+        f'for the package "{name}" (a {eco_label})? '
         f'Reply with just the search term string, nothing else. '
+        f'Use the name of the {eco_label}, not wrappers in other languages. '
         f'Example: for "dotnet" in the "system" ecosystem, reply: microsoft .net core'
     )
     try:
@@ -334,7 +454,51 @@ _CPE_OVERRIDES: dict[str, list[str]] = {
     # ASP.NET Core CVEs are under "microsoft:asp.net_core".
     "dotnet": ["microsoft:.net", "microsoft:asp.net_core"],
     "microsoft.netcore.app": ["microsoft:.net", "microsoft:asp.net_core"],
+    "tomcat": ["apache:tomcat"],
+    "apache tomcat": ["apache:tomcat"],
+    "boost": ["boost:boost"],
+    "openssl": ["openssl:openssl"],
+    "curl": ["haxx:curl", "haxx:libcurl"],
+    "libcurl": ["haxx:curl", "haxx:libcurl"],
 }
+
+# Map veripak ecosystems to CPE target_sw values that would be contradictory.
+# If a CVE's CPE entries specify one of these target_sw values and it contradicts
+# the package's ecosystem, the CVE is likely for a different package.
+_ECOSYSTEM_CPE_EXCLUSIONS: dict[str, set[str]] = {
+    "c": {"python", "node.js", "ruby", "php", "java", "cran_r"},
+    "cpp": {"python", "node.js", "ruby", "php", "java", "cran_r"},
+    "system": {"python", "node.js", "ruby", "php"},
+    "desktop-app": {"python", "node.js", "ruby", "php"},
+    "driver": {"python", "node.js", "ruby", "php", "java"},
+}
+
+
+def _ecosystem_compatible(cve_item: dict, ecosystem: str) -> bool:
+    """Check if a CVE's CPE target_sw is compatible with the package ecosystem.
+
+    Returns True if compatible or if can't determine (conservative).
+    """
+    exclusions = _ECOSYSTEM_CPE_EXCLUSIONS.get(ecosystem)
+    if not exclusions:
+        return True
+
+    configurations = cve_item.get("cve", {}).get("configurations", [])
+    if not configurations:
+        return True
+
+    for config_entry in configurations:
+        for node in config_entry.get("nodes", []):
+            for cpe_match in node.get("cpeMatch", []):
+                criteria = cpe_match.get("criteria", "")
+                parts = criteria.split(":")
+                # CPE 2.3: cpe:2.3:a:vendor:product:ver:update:edition:lang:sw_edition:target_sw:target_hw:other
+                if len(parts) >= 11:
+                    target_sw = parts[10].lower()
+                    if target_sw != "*" and target_sw in exclusions:
+                        return False
+
+    return True
 
 
 def _suggest_nvd_cpe(name: str, ecosystem: str) -> list[str]:
@@ -348,9 +512,18 @@ def _suggest_nvd_cpe(name: str, ecosystem: str) -> list[str]:
     if override:
         return override
 
+    eco_label = {
+        "c": "C library",
+        "cpp": "C++ library",
+        "system": "Linux system package",
+        "desktop-app": "desktop application",
+        "driver": "hardware driver",
+    }.get(ecosystem, ecosystem)
+
     prompt = (
         f'What is the NVD CPE 2.3 vendor:product identifier for the package "{name}" '
-        f'(ecosystem: {ecosystem})? Reply with just "vendor:product", nothing else. '
+        f'(a {eco_label})? Reply with just "vendor:product", nothing else. '
+        f'Return the CPE for the {eco_label} version, not wrappers or bindings in other languages. '
         f'Examples: "grafana:grafana", "microsoft:.net", "openssl:openssl", '
         f'"linux:linux_kernel"'
     )
@@ -448,9 +621,9 @@ def check_cves(
         if replacement_name and replacement_name.lower() != name.lower():
             replacement_cves_raw = _osv_query_package(replacement_name, osv_eco)
 
-        versions_cves = _dedupe(versions_cves_raw)
-        latest_cves = _dedupe(latest_cves_raw)
-        replacement_cves = _dedupe(replacement_cves_raw)
+        versions_cves = _dedupe_cross_source(versions_cves_raw)
+        latest_cves = _dedupe_cross_source(latest_cves_raw)
+        replacement_cves = _dedupe_cross_source(replacement_cves_raw)
         method = "osv_dev"
 
     elif ecosystem in NVD_ECOSYSTEMS:
@@ -514,7 +687,20 @@ def check_cves(
                 summary = descriptions[0].get("value", "") if descriptions else ""
                 if cve_id in nvd_cves_by_id:
                     continue
-                if apply_text_filter and name_lower not in summary.lower():
+                if apply_text_filter:
+                    if len(name_lower) < 5:
+                        # Short names need word-boundary matching to avoid false positives
+                        # e.g., "b64" should not match "base64", "blt" should not match "built"
+                        if not re.search(r'\b' + re.escape(name_lower) + r'\b', summary.lower()):
+                            continue
+                    else:
+                        if name_lower not in summary.lower():
+                            continue
+                # CPE product identity validation
+                if not _cpe_matches_package(item, name, ecosystem):
+                    continue
+                # Ecosystem compatibility check
+                if not _ecosystem_compatible(item, ecosystem):
                     continue
 
                 entry: dict = {
@@ -578,7 +764,13 @@ def check_cves(
     all_ids: set[str] = set()
     high_critical = 0
     for entry in versions_cves + latest_cves + replacement_cves:
-        all_ids.add(entry["id"])
+        entry_id = entry["id"]
+        if entry_id in all_ids:
+            continue
+        # Mark this entry and all its aliases as seen
+        all_ids.add(entry_id)
+        for alias in entry.get("aliases", []):
+            all_ids.add(alias)
         if entry.get("severity") in ("HIGH", "CRITICAL"):
             high_critical += 1
 
