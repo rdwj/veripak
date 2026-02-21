@@ -179,12 +179,16 @@ def _extract_on_budget(
     turns_used: int,
     tool_calls_used: int,
     reason: str,
+    tool_schemas: Optional[list] = None,
 ) -> AgentResult:
-    """Give the agent one final turn without tools to produce its answer.
+    """Give the agent one final turn to produce its answer.
 
     Called when the tool-call or turn budget is exhausted. Instead of
     discarding all intermediate results, we ask the model to synthesize
     what it has gathered so far into the expected JSON format.
+
+    We must pass tool_schemas because Anthropic requires the tools parameter
+    when the conversation history contains tool calls/results.
     """
     messages.append({
         "role": "user",
@@ -196,7 +200,7 @@ def _extract_on_budget(
     })
 
     try:
-        response = model_caller.call_model_chat(messages, tools=None)
+        response = model_caller.call_model_chat(messages, tools=tool_schemas)
         content = getattr(response, "content", "") or ""
         answer = _parse_final_answer(content)
     except Exception as exc:
@@ -300,6 +304,7 @@ def run_agent(
                 turns_used=turn + 1,
                 tool_calls_used=total_tool_calls,
                 reason="tool call",
+                tool_schemas=schemas,
             )
 
     # Turn budget exhausted — try extraction
@@ -309,4 +314,5 @@ def run_agent(
         turns_used=max_turns,
         tool_calls_used=total_tool_calls,
         reason="turn",
+        tool_schemas=schemas,
     )
