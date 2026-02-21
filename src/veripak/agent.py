@@ -116,6 +116,24 @@ class PackageCheckAgent:
                 state.version_result["version"] = eol_version
                 state.version_result["method"] = "eol_agent_fallback"
 
+        # Cross-pollinate: if version checker echoed the user's own version
+        # for an EOL package, prefer the EOL agent's current_version
+        eol_result = state.eol_result or {}
+        version_result = state.version_result or {}
+        if (
+            eol_result.get("eol") is True
+            and version_result.get("version") is not None
+            and state.versions_in_use
+            and version_result["version"] == state.versions_in_use[0]
+            and eol_result.get("current_version")
+            and eol_result["current_version"] != state.versions_in_use[0]
+        ):
+            version_result["version"] = eol_result["current_version"]
+            version_result["method"] = (
+                (version_result.get("method") or "") + "+eol_agent_override"
+            )
+            state.version_result = version_result
+
         # --- Fork 2: Track C (replacement) || Track D (CVE agent) ---
         # Determine if we need replacement validation
         eol_answer = state.eol_result or {}
