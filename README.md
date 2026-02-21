@@ -34,30 +34,80 @@ veripak check requests --ecosystem python --no-cves
 
 ## How It Works
 
-```mermaid
-flowchart TD
-    IN([Input\npackage name · ecosystem · versions in use\nhomepage · release_notes_url · repository_url · download_url])
-
-    N1["N1 · resolve_version\nProgrammatic: registry API\nNon-programmatic: 2× Tavily search → local LLM"]
-    N2["N2 · discover_download\nFirst call strategies:\n1 · use provided download_url\n2 · follow release-notes page chain to tarball\n3 · GitHub releases API for tagged version\nRetry adds:\n4 · GitHub latest release\n5 · Tavily search"]
-    N3["N3 · validate_download\nHTTP HEAD on discovered URL"]
-    N4["N4 · check_cves\nProgrammatic: OSV.dev (version-aware)\nNon-programmatic: OSV Debian/Alpine/Ubuntu\n+ NVD API v2 with CPE version-range filter → merge"]
-    N5["N5 · validate_replacement\nTavily + model\n(only if replacement name provided)"]
-
-    OUT([Output JSON\nversion · download URL · CVEs · replacement · agent metadata])
-
-    IN --> N1
-    N1 -->|version resolved| N2
-    N1 -->|not found, retry| N1
-    N2 --> N3
-    N3 -->|HEAD OK| N4
-    N3 -->|HEAD failed| N2
-    N4 --> N5
-    N4 -->|no replacement| OUT
-    N5 --> OUT
+```
+                    +-------------------------+
+                    |      PACKAGE INPUT      |
+                    |  name, versions_in_use, |
+                    |  urls, replacement_name |
+                    +-----------+-------------+
+                                |
+                    +-----------v-------------+
+                    |   E0: ECOSYSTEM AGENT   |
+                    |                         |
+                    |  1. LLM: "What is this?"|
+                    |     -> "java" (instant)  |
+                    |                         |
+                    |  2. Validate: probe     |
+                    |     Maven/PyPI/npm/etc  |
+                    |     -> confirmed        |
+                    |                         |
+                    |  3. If no hit: Tavily   |
+                    |     search to confirm   |
+                    +-----------+-------------+
+                                |
+                  +-------------+-------------+
+                  |       FORK (parallel)     |
+                  |                           |
+         +--------v--------+     +------------v-----------+
+         |  TRACK A        |     |  TRACK B               |
+         |                 |     |                        |
+         |  N1: VERSION    |     |  EOL AGENT             |
+         |  (registry API) |     |                        |
+         |       |         |     |  Phase 1: Is version   |
+         |       v         |     |    EOL?                |
+         |  N2: DOWNLOAD   |     |  Phase 2: Is project   |
+         |   discovery     |     |    dead?               |
+         |       |         |     |  Phase 3: What's the   |
+         |       v         |     |    replacement?        |
+         |  N3: DOWNLOAD   |     |                        |
+         |   validation    |     +------------+-----------+
+         +--------+--------+                  |
+                  +-------------+-------------+
+                                |
+                          JOIN  |
+                                |
+                  +-------------+-------------+
+                  |       FORK (parallel)     |
+                  |                           |
+         +--------v--------+     +------------v-----------+
+         |  TRACK C        |     |  TRACK D               |
+         |                 |     |                        |
+         |  N5: REPLACEMENT|     |  CVE AGENT             |
+         |  VALIDATION     |     |  (agentic loop)        |
+         |  (only if EOL   |     |                        |
+         |   agent found   |     |  Uses: version from    |
+         |   a replacement |     |  Track A, EOL status   |
+         |   to validate)  |     |  from Track B          |
+         +--------+--------+     +------------+-----------+
+                  |                            |
+                  +-------------+--------------+
+                                |
+                          JOIN  |
+                                |
+                    +-----------v-------------+
+                    |  N6: SUMMARY AGENT      |
+                    |                         |
+                    |  All raw results +      |
+                    |  deterministic guards + |
+                    |  HITL flags propagated  |
+                    +-----------+-------------+
+                                |
+                    +-----------v-------------+
+                    |    FINAL RESULT JSON    |
+                    +-------------------------+
 ```
 
-The agent follows links — navigating from a release-notes page through to an actual tarball URL — rather than relying on search snippet text alone, because snippets frequently omit or truncate the exact versioned download URL needed for verification. Tavily results fed to local models are capped at 3 results with 200-character truncation per snippet to keep context within the working window of small LLMs running through Ollama or a self-hosted vLLM endpoint. Non-programmatic packages (C, C++, system libraries, drivers) are checked against both OSV and NVD because OSV's Debian/Alpine/Ubuntu advisories carry precise version ranges while NVD's CPE dictionary provides broader coverage for upstream projects that don't publish to a package registry; combining the two minimises missed CVEs from either source's blind spots.
+Three specialized LLM agents (Ecosystem, EOL, CVE) replace fixed code paths, enabling reasoning about gaps and iterating on incomplete results. The agents use tools (registry probes, web search, GitHub API, advisory page fetching) and can flag fields for human review when data sources are inaccessible or signals are contradictory. Tracks A+B and C+D run in parallel via `ThreadPoolExecutor` for wall-clock speedup without async complexity.
 
 ## Supported ecosystems
 
