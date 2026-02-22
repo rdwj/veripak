@@ -242,4 +242,12 @@ def cmd_check(
         for err in agent_errors:
             click.echo(f"    {err}")
 
+    usage = result.get("_usage")
+    if usage and usage.get("total_tokens"):
+        prompt_t = usage["prompt_tokens"]
+        comp_t = usage["completion_tokens"]
+        total_t = usage["total_tokens"]
+        cost = usage["estimated_cost_usd"]
+        click.echo(f"  Tokens:      {prompt_t:,} prompt + {comp_t:,} completion = {total_t:,} total (${cost:.4f})")
+
     click.echo()

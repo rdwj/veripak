@@ -71,6 +71,9 @@ class PackageCheckAgent:
     ) -> dict:
         """Run the full audit pipeline and return a consolidated result dict."""
 
+        from . import model_caller
+        model_caller.reset_usage()
+
         # --- E0: Ecosystem agent (blocking) ---
         if not ecosystem:
             from .agents.ecosystem_agent import infer_ecosystem
@@ -168,6 +171,8 @@ class PackageCheckAgent:
 
         # Feed summary discoveries back to raw blocks
         self._backfill_from_summary(result)
+
+        result["_usage"] = model_caller.get_usage_summary()
 
         return result
 
