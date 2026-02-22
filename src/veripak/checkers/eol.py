@@ -4,7 +4,6 @@ import datetime
 import json
 import re
 import urllib.request
-from typing import Optional
 
 _BASE_URL = "https://endoflife.date/api"
 _TIMEOUT = 10
@@ -39,7 +38,7 @@ _VENDOR_PREFIXES = (
 )
 
 # Module-level cache for the full product list from endoflife.date.
-_product_list_cache: Optional[set[str]] = None
+_product_list_cache: set[str] | None = None
 
 
 # ------------------------------------------------------------------
@@ -123,7 +122,7 @@ def _content_words(text: str) -> set[str]:
     return {w for w in parts if w and w not in _NOISE_WORDS}
 
 
-def _fuzzy_match(name: str, products: set[str]) -> Optional[str]:
+def _fuzzy_match(name: str, products: set[str]) -> str | None:
     """Try to find a matching product slug via content-word overlap.
 
     Returns the best matching product slug, or None.
@@ -135,7 +134,7 @@ def _fuzzy_match(name: str, products: set[str]) -> Optional[str]:
     if not input_words:
         return None
 
-    best: Optional[str] = None
+    best: str | None = None
     best_score = -1
 
     for product in products:
@@ -163,7 +162,7 @@ def _fuzzy_match(name: str, products: set[str]) -> Optional[str]:
 # HTTP helpers
 # ------------------------------------------------------------------
 
-def _try_fetch(slug: str) -> Optional[list]:
+def _try_fetch(slug: str) -> list | None:
     """Attempt to fetch cycle data for a single slug. Returns None on failure."""
     url = f"{_BASE_URL}/{slug}.json"
     try:
@@ -175,7 +174,7 @@ def _try_fetch(slug: str) -> Optional[list]:
         return None
 
 
-def _fetch_cycles(product: str) -> tuple[Optional[list], Optional[str]]:
+def _fetch_cycles(product: str) -> tuple[list | None, str | None]:
     """Fetch release cycle data from endoflife.date. Returns (cycles, slug) or (None, None)."""
     # Try each normalized candidate
     for slug in _normalize_candidates(product):
@@ -198,7 +197,7 @@ def _fetch_cycles(product: str) -> tuple[Optional[list], Optional[str]]:
 # Unchanged helpers
 # ------------------------------------------------------------------
 
-def _extract_branch(version: str) -> Optional[str]:
+def _extract_branch(version: str) -> str | None:
     """Extract major.minor from a version string, e.g. '6.0.1' -> '6.0'."""
     m = re.match(r'^(\d+\.\d+)', version)
     if m:
@@ -207,7 +206,7 @@ def _extract_branch(version: str) -> Optional[str]:
     return m2.group(1) if m2 else None
 
 
-def _is_eol(eol_value) -> Optional[bool]:
+def _is_eol(eol_value) -> bool | None:
     """Interpret the eol field: bool or date string compared to today."""
     if isinstance(eol_value, bool):
         return eol_value
@@ -276,7 +275,7 @@ def check_eol(name: str, versions_in_use: list[str]) -> dict:
 # Maintenance signal heuristics (beyond endoflife.date)
 # ------------------------------------------------------------------
 
-def _check_npm_deprecated(name: str) -> Optional[dict]:
+def _check_npm_deprecated(name: str) -> dict | None:
     """Check if an npm package is deprecated via the registry API."""
     import urllib.parse
     encoded = urllib.parse.quote(name, safe="@/")
@@ -302,7 +301,7 @@ def _check_npm_deprecated(name: str) -> Optional[dict]:
     return None
 
 
-def _check_pypi_inactive(name: str) -> Optional[dict]:
+def _check_pypi_inactive(name: str) -> dict | None:
     """Check if a PyPI package is marked as Inactive via Development Status classifiers."""
     url = f"https://pypi.org/pypi/{name}/json"
     try:
@@ -328,10 +327,10 @@ def _check_pypi_inactive(name: str) -> Optional[dict]:
 def check_maintenance_signals(
     name: str,
     ecosystem: str,
-    repository_url: Optional[str] = None,
-    latest_version_date: Optional[str] = None,
-    version_in_use: Optional[str] = None,
-    latest_version: Optional[str] = None,
+    repository_url: str | None = None,
+    latest_version_date: str | None = None,
+    version_in_use: str | None = None,
+    latest_version: str | None = None,
 ) -> dict:
     """Check maintenance signals beyond endoflife.date.
 
@@ -397,7 +396,7 @@ def check_maintenance_signals(
     return empty
 
 
-def _check_github_status(repository_url: str) -> Optional[dict]:
+def _check_github_status(repository_url: str) -> dict | None:
     """Check GitHub API for archived/abandoned status."""
     m = re.match(r'https?://github\.com/([^/]+/[^/]+?)(?:\.git)?/?$', repository_url)
     if not m:
@@ -461,7 +460,7 @@ def _check_github_status(repository_url: str) -> Optional[dict]:
     return None
 
 
-def _check_version_gap_eol(version_in_use: str, latest_version: str) -> Optional[dict]:
+def _check_version_gap_eol(version_in_use: str, latest_version: str) -> dict | None:
     """Infer de facto EOL when version is many major versions behind.
 
     CalVer packages are excluded: a large year-based gap (e.g. 20.x → 25.x for
@@ -499,8 +498,8 @@ def _check_version_gap_eol(version_in_use: str, latest_version: str) -> Optional
 def _check_tavily_eol(
     name: str,
     ecosystem: str,
-    version_in_use: Optional[str] = None,
-) -> Optional[dict]:
+    version_in_use: str | None = None,
+) -> dict | None:
     """Search Tavily for EOL/deprecation announcements.
 
     When version_in_use is provided, the search is scoped to that specific
@@ -508,8 +507,8 @@ def _check_tavily_eol(
     a currently-maintained version.
     """
     try:
-        from .. import tavily as tavily_client
         from .. import model_caller
+        from .. import tavily as tavily_client
     except ImportError:
         return None
 

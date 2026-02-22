@@ -1,11 +1,10 @@
 """Ecosystem inference: registry probing with Tavily+model fallback."""
 
-import urllib.request
 import urllib.error
-from typing import Optional
+import urllib.request
 
-from .. import tavily as tavily_client
 from .. import model_caller
+from .. import tavily as tavily_client
 
 # Ordered list of (ecosystem, probe_fn) — first hit wins.
 # Each probe_fn takes a package name and returns True if found.
@@ -62,20 +61,20 @@ def _get_ok(url: str) -> bool:
         return False
 
 
-def _probe_pypi(name: str, version: Optional[str] = None) -> bool:
+def _probe_pypi(name: str, version: str | None = None) -> bool:
     if version:
         return _head_ok(f"https://pypi.org/pypi/{name}/{version}/json")
     return _head_ok(f"https://pypi.org/pypi/{name}/json")
 
 
-def _probe_npm(name: str, version: Optional[str] = None) -> bool:
+def _probe_npm(name: str, version: str | None = None) -> bool:
     encoded = name.replace("/", "%2F")
     if version:
         return _head_ok(f"https://registry.npmjs.org/{encoded}/{version}")
     return _head_ok(f"https://registry.npmjs.org/{encoded}")
 
 
-def _probe_nuget(name: str, version: Optional[str] = None) -> bool:
+def _probe_nuget(name: str, version: str | None = None) -> bool:
     lower = name.lower()
     if version:
         # Flat container has a specific version directory if it exists
@@ -85,7 +84,7 @@ def _probe_nuget(name: str, version: Optional[str] = None) -> bool:
     return _get_ok(f"https://api.nuget.org/v3-flatcontainer/{lower}/index.json")
 
 
-def _probe_go(name: str, version: Optional[str] = None) -> bool:
+def _probe_go(name: str, version: str | None = None) -> bool:
     encoded = name.replace("/", "%2F")
     if version:
         v = version if version.startswith("v") else f"v{version}"
@@ -93,7 +92,7 @@ def _probe_go(name: str, version: Optional[str] = None) -> bool:
     return _get_ok(f"https://proxy.golang.org/{encoded}/@latest")
 
 
-def _probe_maven(name: str, version: Optional[str] = None) -> bool:
+def _probe_maven(name: str, version: str | None = None) -> bool:
     """Maven search always returns 200; check numFound > 0 in the JSON body.
 
     Tries artifact-ID search first (exact, e.g. "poi"), then falls back to
@@ -127,11 +126,11 @@ def _probe_maven(name: str, version: Optional[str] = None) -> bool:
     return False
 
 
-def _probe_cpan(name: str, version: Optional[str] = None) -> bool:
+def _probe_cpan(name: str, version: str | None = None) -> bool:
     return _get_ok(f"https://fastapi.metacpan.org/v1/module/{name}")
 
 
-def _probe_packagist(name: str, version: Optional[str] = None) -> bool:
+def _probe_packagist(name: str, version: str | None = None) -> bool:
     # Packagist requires vendor/package format. Names without "/" are not PHP packages.
     if "/" not in name:
         return False
@@ -149,7 +148,7 @@ _REGISTRY_PROBES: list[tuple[str, object]] = [
 ]
 
 
-def _infer_via_model(name: str, version: Optional[str] = None) -> Optional[str]:
+def _infer_via_model(name: str, version: str | None = None) -> str | None:
     """Use Tavily search + model to classify a package's ecosystem."""
     query = f"{name} {version} software package" if version else f"{name} software package"
     try:
@@ -188,7 +187,7 @@ def _infer_via_model(name: str, version: Optional[str] = None) -> Optional[str]:
     return None
 
 
-def infer_ecosystem(name: str, version: Optional[str] = None) -> Optional[str]:
+def infer_ecosystem(name: str, version: str | None = None) -> str | None:
     """Infer the ecosystem for a package.
 
     Stage 1: probe programmatic registries (PyPI, npm, NuGet, Go, Maven,

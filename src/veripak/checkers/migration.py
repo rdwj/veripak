@@ -2,7 +2,6 @@
 
 import datetime
 import re
-from typing import Optional
 
 
 def _version_tuple(ver: str) -> tuple[int, ...]:
@@ -46,7 +45,7 @@ def is_calver(version: str) -> bool:
 def compute_migration_complexity(
     version_in_use: str,
     latest_version: str,
-    eol: Optional[bool] = None,
+    eol: bool | None = None,
 ) -> dict:
     """Compute migration complexity from version gap.
 
@@ -135,7 +134,7 @@ _URGENCY_ORDER = {"low": 0, "medium": 1, "high": 2, "immediate": 3}
 
 
 def compute_urgency_floor(
-    eol: Optional[bool],
+    eol: bool | None,
     high_critical_count: int,
     total_cves: int,
     migration_complexity: str,
@@ -173,7 +172,7 @@ def compute_urgency_floor(
     return "low"
 
 
-def urgency_at_least(current: Optional[str], floor: str) -> str:
+def urgency_at_least(current: str | None, floor: str) -> str:
     """Return the higher of current urgency and the floor."""
     if current is None:
         return floor

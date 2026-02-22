@@ -6,7 +6,6 @@ import sys
 import tempfile
 import urllib.error
 import urllib.request
-from typing import Optional
 
 _USER_AGENT = "veripak/0.1"
 _TIMEOUT = 15
@@ -39,7 +38,7 @@ def _http_head(url: str, timeout: int = _TIMEOUT) -> tuple[bool, str]:
         return False, str(e)
 
 
-def _first_line(text: str, max_len: int = 120) -> Optional[str]:
+def _first_line(text: str, max_len: int = 120) -> str | None:
     if not text:
         return None
     line = text.strip().splitlines()[0].strip()

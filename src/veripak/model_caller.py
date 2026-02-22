@@ -6,7 +6,6 @@ Public API:
 
 import os
 import threading
-from typing import Optional
 
 from . import config as cfg
 
@@ -63,7 +62,7 @@ def get_usage_summary() -> dict:
     }
 
 
-def _resolve_model() -> tuple[str, Optional[str]]:
+def _resolve_model() -> tuple[str, str | None]:
     """Return (model_string_for_litellm, api_base_or_None)."""
     backend = cfg.get("llm_backend", "ollama")
     model = cfg.get("llm_model", "gpt-oss:20b")
@@ -87,7 +86,7 @@ def _resolve_model() -> tuple[str, Optional[str]]:
     return model, base_url
 
 
-def _load_anthropic_key() -> Optional[str]:
+def _load_anthropic_key() -> str | None:
     """Prefer env var, fall back to config."""
     return os.environ.get("ANTHROPIC_API_KEY") or cfg.get("anthropic_api_key")
 
@@ -106,7 +105,7 @@ def call_model(prompt: str, system: str = "") -> str:
 
     model, api_base = _resolve_model()
 
-    primary_error: Optional[Exception] = None
+    primary_error: Exception | None = None
     try:
         kwargs: dict = {"model": model, "messages": messages}
         if api_base:
@@ -119,7 +118,7 @@ def call_model(prompt: str, system: str = "") -> str:
 
     # --- Anthropic fallback ---
     anthropic_key = _load_anthropic_key()
-    anthropic_error: Optional[Exception] = None
+    anthropic_error: Exception | None = None
     try:
         kwargs = {"model": _ANTHROPIC_FALLBACK_MODEL, "messages": messages}
         if anthropic_key:
@@ -138,7 +137,7 @@ def call_model(prompt: str, system: str = "") -> str:
     )
 
 
-def call_model_chat(messages: list, tools: Optional[list] = None):
+def call_model_chat(messages: list, tools: list | None = None):
     """Multi-turn call returning the full message object (supports tool_calls).
 
     Falls back to Anthropic if the primary backend fails.
@@ -148,7 +147,7 @@ def call_model_chat(messages: list, tools: Optional[list] = None):
 
     model, api_base = _resolve_model()
 
-    primary_error: Optional[Exception] = None
+    primary_error: Exception | None = None
     try:
         kwargs: dict = {"model": model, "messages": messages}
         if api_base:
@@ -164,7 +163,7 @@ def call_model_chat(messages: list, tools: Optional[list] = None):
 
     # --- Anthropic fallback ---
     anthropic_key = _load_anthropic_key()
-    anthropic_error: Optional[Exception] = None
+    anthropic_error: Exception | None = None
     try:
         kwargs = {"model": _ANTHROPIC_FALLBACK_MODEL, "messages": messages}
         if anthropic_key:

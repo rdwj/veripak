@@ -4,10 +4,8 @@ import json
 import re
 import urllib.parse
 import urllib.request
-from typing import Optional
 
-from .. import tavily
-from .. import model_caller
+from .. import model_caller, tavily
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -157,7 +155,7 @@ def strip_distro_suffix(version: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _http_get_json(url: str, timeout: int = 15) -> Optional[dict]:
+def _http_get_json(url: str, timeout: int = 15) -> dict | None:
     """Fetch URL and return parsed JSON, or None on error."""
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "veripak/0.1"})
@@ -172,7 +170,7 @@ def _http_get_json(url: str, timeout: int = 15) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 
 
-def check_pypi(name: str) -> tuple[Optional[str], str]:
+def check_pypi(name: str) -> tuple[str | None, str]:
     """Return (version, source_url) for a PyPI package."""
     url = f"https://pypi.org/pypi/{name}/json"
     data = _http_get_json(url)
@@ -188,7 +186,7 @@ def check_pypi(name: str) -> tuple[Optional[str], str]:
     return latest, url
 
 
-def check_npm(name: str) -> tuple[Optional[str], str]:
+def check_npm(name: str) -> tuple[str | None, str]:
     """Return (version, source_url) for an npm package."""
     encoded = name.replace("/", "%2F")
     url = f"https://registry.npmjs.org/{encoded}"
@@ -201,7 +199,7 @@ def check_npm(name: str) -> tuple[Optional[str], str]:
 
 def _maven_branch_latest(
     group_id: str, artifact_id: str, target_major: int,
-) -> Optional[str]:
+) -> str | None:
     """Find the latest stable version in a specific major version line.
 
     Uses the Maven Central ``core=gav`` endpoint which returns individual
@@ -227,7 +225,7 @@ def _maven_branch_latest(
     return max(candidates, key=_version_tuple)
 
 
-def check_maven(name: str, versions_in_use: Optional[list[str]] = None) -> tuple[Optional[str], str, Optional[str]]:
+def check_maven(name: str, versions_in_use: list[str] | None = None) -> tuple[str | None, str, str | None]:
     """Return (version, source_url, notes) for a Maven artifact.
 
     If Maven Central returns a pre-release (e.g. a milestone like "4.0-M3"),
@@ -284,7 +282,7 @@ def check_maven(name: str, versions_in_use: Optional[list[str]] = None) -> tuple
     return version, url, notes
 
 
-def check_go(module: str) -> tuple[Optional[str], str]:
+def check_go(module: str) -> tuple[str | None, str]:
     """Return (version, source_url) for a Go module via the Go proxy."""
     encoded = module.replace("/", "%2F")
     url = f"https://proxy.golang.org/{encoded}/@latest"
@@ -295,7 +293,7 @@ def check_go(module: str) -> tuple[Optional[str], str]:
     return version or None, url
 
 
-def check_nuget(name: str) -> tuple[Optional[str], str]:
+def check_nuget(name: str) -> tuple[str | None, str]:
     """Return (version, source_url) for a NuGet package."""
     url = f"https://api.nuget.org/v3-flatcontainer/{name.lower()}/index.json"
     data = _http_get_json(url)
@@ -308,7 +306,7 @@ def check_nuget(name: str) -> tuple[Optional[str], str]:
     return stable[-1] if stable else None, url
 
 
-def check_cpan(name: str) -> tuple[Optional[str], str]:
+def check_cpan(name: str) -> tuple[str | None, str]:
     """Return (version, source_url) for a CPAN/Perl module."""
     url = f"https://fastapi.metacpan.org/v1/module/{name}"
     data = _http_get_json(url)
@@ -318,7 +316,7 @@ def check_cpan(name: str) -> tuple[Optional[str], str]:
     return str(version) if version is not None else None, url
 
 
-def check_packagist(name: str) -> tuple[Optional[str], str]:
+def check_packagist(name: str) -> tuple[str | None, str]:
     """Return (version, source_url) for a PHP Packagist package."""
     pkg = name.lower()
     url = f"https://packagist.org/packages/{pkg}.json"
@@ -356,7 +354,7 @@ def check_packagist(name: str) -> tuple[Optional[str], str]:
 # ---------------------------------------------------------------------------
 
 
-def check_github_releases(repo_url: str) -> tuple[Optional[str], str]:
+def check_github_releases(repo_url: str) -> tuple[str | None, str]:
     """Query GitHub API for the latest release version.
 
     Returns (version, source_url) or (None, source_url) on failure.
@@ -387,7 +385,7 @@ def check_github_releases(repo_url: str) -> tuple[Optional[str], str]:
     return version or None, html_url
 
 
-def check_release_monitoring(name: str) -> tuple[Optional[str], str, Optional[str]]:
+def check_release_monitoring(name: str) -> tuple[str | None, str, str | None]:
     """Query release-monitoring.org (Anitya) for the latest upstream version.
 
     Returns (version, source_url, notes) or (None, source_url, None) on failure.
@@ -433,7 +431,7 @@ def check_release_monitoring(name: str) -> tuple[Optional[str], str, Optional[st
     return None, url, None
 
 
-def check_repology(name: str) -> tuple[Optional[str], str, Optional[str]]:
+def check_repology(name: str) -> tuple[str | None, str, str | None]:
     """Query Repology for the newest upstream version.
 
     Returns (version, source_url, notes) or (None, source_url, None) on failure.
@@ -475,9 +473,9 @@ def check_repology(name: str) -> tuple[Optional[str], str, Optional[str]]:
 
 
 def check_via_model(
-    name: str, ecosystem: str, versions_in_use: Optional[list[str]] = None,
+    name: str, ecosystem: str, versions_in_use: list[str] | None = None,
     skip_branch_scope: bool = False,
-) -> tuple[Optional[str], str, Optional[str], Optional[str]]:
+) -> tuple[str | None, str, str | None, str | None]:
     """Return (version, source_url, proof, notes) using Tavily + model.
 
     Queries Tavily for two searches ("latest version" + "release notes"),
@@ -499,7 +497,7 @@ def check_via_model(
         negative_terms = []
 
     # Detect branch constraint from versions_in_use (e.g. "6.0" → branch "6.0")
-    branch: Optional[str] = None
+    branch: str | None = None
     if versions_in_use and not skip_branch_scope:
         m = re.match(r'^(\d+\.\d+)', versions_in_use[0])
         if m:
@@ -563,18 +561,18 @@ def check_via_model(
 # ---------------------------------------------------------------------------
 
 
-def get_latest_version(name: str, ecosystem: str, versions_in_use: Optional[list[str]] = None, skip_branch_scope: bool = False, repository_url: Optional[str] = None) -> dict:
+def get_latest_version(name: str, ecosystem: str, versions_in_use: list[str] | None = None, skip_branch_scope: bool = False, repository_url: str | None = None) -> dict:
     """Look up the latest version for a package.
 
     Returns a dict with keys:
       version (str|None), source_url (str), method (str),
       proof (str|None), notes (str|None)
     """
-    version: Optional[str] = None
+    version: str | None = None
     source_url: str = ""
     method: str = "registry_api"
-    proof: Optional[str] = None
-    notes: Optional[str] = None
+    proof: str | None = None
+    notes: str | None = None
 
     if ecosystem == "python":
         version, source_url = check_pypi(name)

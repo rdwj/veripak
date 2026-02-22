@@ -5,7 +5,6 @@ import random
 import time
 import urllib.error
 import urllib.request
-from typing import Optional
 
 from . import config
 
@@ -48,7 +47,7 @@ def search(query: str, max_results: int = 5) -> list[dict]:
     ]
 
 
-def _search_with_backoff(payload: bytes, max_retries: int = 6) -> Optional[dict]:
+def _search_with_backoff(payload: bytes, max_retries: int = 6) -> dict | None:
     """POST to the Tavily search API with exponential backoff on HTTP 429.
 
     Returns the parsed JSON dict on success, or None on failure.

@@ -16,7 +16,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from html.parser import HTMLParser
-from typing import Optional
 
 _USER_AGENT = "veripak/0.1"
 _TIMEOUT = 15
@@ -32,7 +31,7 @@ _TARBALL_RE = re.compile(
 # ---------------------------------------------------------------------------
 
 
-def _fetch_text(url: str, timeout: int = _TIMEOUT) -> Optional[str]:
+def _fetch_text(url: str, timeout: int = _TIMEOUT) -> str | None:
     """GET url and return decoded text, or None on error."""
     req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
     try:
@@ -42,7 +41,7 @@ def _fetch_text(url: str, timeout: int = _TIMEOUT) -> Optional[str]:
         return None
 
 
-def _fetch_json(url: str, timeout: int = _TIMEOUT) -> Optional[dict]:
+def _fetch_json(url: str, timeout: int = _TIMEOUT) -> dict | None:
     """GET url with JSON Accept header and return parsed dict, or None on error."""
     import json
     req = urllib.request.Request(
@@ -114,7 +113,7 @@ def _is_tarball(url: str) -> bool:
 
 def _strategy_release_notes(
     release_notes_url: str, version: str, name: str
-) -> Optional[str]:
+) -> str | None:
     """Strategy 2: fetch release notes index, follow links, extract tarball."""
     html = _fetch_text(release_notes_url)
     if not html:
@@ -153,7 +152,7 @@ def _strategy_release_notes(
     return None
 
 
-def _extract_github_owner_repo(repository_url: str) -> Optional[tuple[str, str]]:
+def _extract_github_owner_repo(repository_url: str) -> tuple[str, str] | None:
     """Extract (owner, repo) from a GitHub URL, or None if not a GitHub URL."""
     match = re.search(
         r"github\.com[/:]([^/]+)/([^/\s.]+?)(?:\.git)?$",
@@ -165,7 +164,7 @@ def _extract_github_owner_repo(repository_url: str) -> Optional[tuple[str, str]]
     return None
 
 
-def _extract_asset_tarball(release: dict) -> Optional[str]:
+def _extract_asset_tarball(release: dict) -> str | None:
     """From a GitHub release dict, return a tarball asset URL or tarball_url."""
     for asset in release.get("assets", []):
         url = asset.get("browser_download_url", "")
@@ -175,7 +174,7 @@ def _extract_asset_tarball(release: dict) -> Optional[str]:
     return release.get("tarball_url") or None
 
 
-def _strategy_github_releases(repository_url: str, version: str) -> Optional[str]:
+def _strategy_github_releases(repository_url: str, version: str) -> str | None:
     """Strategy 3: try GitHub releases API for specific version tags."""
     parsed = _extract_github_owner_repo(repository_url)
     if not parsed:
@@ -194,7 +193,7 @@ def _strategy_github_releases(repository_url: str, version: str) -> Optional[str
     return None
 
 
-def _strategy_github_latest(repository_url: str) -> Optional[str]:
+def _strategy_github_latest(repository_url: str) -> str | None:
     """Strategy 4: fall back to the latest GitHub release."""
     parsed = _extract_github_owner_repo(repository_url)
     if not parsed:
@@ -209,7 +208,7 @@ def _strategy_github_latest(repository_url: str) -> Optional[str]:
     return None
 
 
-def _strategy_tavily(name: str, version: str) -> Optional[str]:
+def _strategy_tavily(name: str, version: str) -> str | None:
     """Strategy 5: Tavily search for the tarball URL."""
     from .. import tavily as tavily_mod
 
@@ -247,13 +246,13 @@ def _strategy_tavily(name: str, version: str) -> Optional[str]:
 def discover(
     name: str,
     ecosystem: str,
-    version: Optional[str],
-    release_notes_url: Optional[str] = None,
-    repository_url: Optional[str] = None,
-    homepage: Optional[str] = None,
-    existing_url: Optional[str] = None,
+    version: str | None,
+    release_notes_url: str | None = None,
+    repository_url: str | None = None,
+    homepage: str | None = None,
+    existing_url: str | None = None,
     retry: bool = False,
-) -> Optional[str]:
+) -> str | None:
     """Discover a download URL for the given package using multiple strategies.
 
     On first call (retry=False): try strategies 1-3 in order.

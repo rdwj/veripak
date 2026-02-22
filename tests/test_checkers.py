@@ -1,12 +1,35 @@
 """Structural unit tests for checker utilities — no network calls."""
 
+import json as _json
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 
-from veripak.checkers.versions import (
-    strip_v, is_stable, is_prerelease, _parse_json_response, _version_tuple, check_pypi,
+from veripak.checkers.cves import (
+    _filter_no_cpe_via_model,
+    _nvd_fetch_by_cpe_name,
+    _suggest_nvd_cpe,
+    _version_in_cpe_range,
 )
-
+from veripak.checkers.download_discovery import (
+    _extract_tarballs_from_html,
+    _is_tarball,
+)
+from veripak.checkers.ecosystem import infer_ecosystem
+from veripak.checkers.eol import (
+    _extract_branch,
+    _is_eol,
+    _normalize_candidates,
+    check_eol,
+)
+from veripak.checkers.versions import (
+    _parse_json_response,
+    _version_tuple,
+    check_pypi,
+    is_prerelease,
+    is_stable,
+    strip_v,
+)
 
 # ---------------------------------------------------------------------------
 # strip_v
@@ -184,7 +207,6 @@ def test_check_pypi_prefers_highest_semver_over_recent_upload():
 # _version_in_cpe_range
 # ---------------------------------------------------------------------------
 
-from veripak.checkers.cves import _version_in_cpe_range
 
 
 @pytest.mark.parametrize("version_str, cpe_match, expected, description", [
@@ -261,7 +283,6 @@ def test_version_in_cpe_range(version_str, cpe_match, expected, description):
 # download_discovery._is_tarball
 # ---------------------------------------------------------------------------
 
-from veripak.checkers.download_discovery import _is_tarball
 
 
 @pytest.mark.parametrize("url, expected", [
@@ -285,7 +306,6 @@ def test_is_tarball(url, expected):
 # download_discovery._extract_tarballs_from_html
 # ---------------------------------------------------------------------------
 
-from veripak.checkers.download_discovery import _extract_tarballs_from_html
 
 
 def test_extract_tarballs_from_html_anchor_hrefs():
@@ -327,7 +347,6 @@ def test_extract_tarballs_from_html_empty():
 # eol._extract_branch
 # ---------------------------------------------------------------------------
 
-from veripak.checkers.eol import _extract_branch, _is_eol, _normalize_candidates, check_eol
 
 
 @pytest.mark.parametrize("version, expected", [
@@ -348,7 +367,6 @@ def test_extract_branch(version, expected):
 # eol._is_eol
 # ---------------------------------------------------------------------------
 
-import datetime
 
 
 @pytest.mark.parametrize("eol_value, expected", [
@@ -369,8 +387,6 @@ def test_is_eol(eol_value, expected):
 # eol.check_eol (mocked network)
 # ---------------------------------------------------------------------------
 
-import json as _json
-import io
 
 
 def _make_urlopen_mock(payload: list):
@@ -498,8 +514,6 @@ def test_check_eol_apache_tomcat_resolves():
 # cves._filter_no_cpe_via_model
 # ---------------------------------------------------------------------------
 
-from veripak.checkers.cves import _filter_no_cpe_via_model
-
 
 _NO_CPE_ENTRIES = [
     {"id": "CVE-2024-1313", "severity": "MEDIUM", "summary": "This issue affects Grafana: from 9.5.0 before 9.5.18.", "version_filter": "no_cpe_data"},
@@ -561,7 +575,6 @@ def test_filter_no_cpe_empty_entries():
 # cves._suggest_nvd_cpe
 # ---------------------------------------------------------------------------
 
-from veripak.checkers.cves import _suggest_nvd_cpe
 
 
 def test_suggest_nvd_cpe_valid_response():
@@ -612,7 +625,6 @@ def test_suggest_nvd_cpe_fallback_on_error():
 # cves._nvd_fetch_by_cpe_name
 # ---------------------------------------------------------------------------
 
-from veripak.checkers.cves import _nvd_fetch_by_cpe_name
 
 
 def _make_cpe_response(vulns: list) -> MagicMock:
@@ -656,7 +668,6 @@ def test_nvd_fetch_by_cpe_name_empty_on_http_error():
 # ecosystem.infer_ecosystem
 # ---------------------------------------------------------------------------
 
-from veripak.checkers.ecosystem import infer_ecosystem, _probe_pypi, _probe_npm, _probe_nuget
 
 
 def test_infer_ecosystem_override():

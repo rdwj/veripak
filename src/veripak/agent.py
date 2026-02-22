@@ -11,13 +11,11 @@ Architecture:
 
 import datetime
 import logging
-from concurrent.futures import ThreadPoolExecutor, Future
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Optional
 
 from .agents.base import HITLFlag
-from .checkers import downloads, replacements, versions
-from .checkers import download_discovery
+from .checkers import download_discovery, downloads, replacements, versions
 
 logger = logging.getLogger(__name__)
 
@@ -28,20 +26,20 @@ class AgentState:
     package: str
     ecosystem: str
     versions_in_use: list[str] = field(default_factory=list)
-    replacement_name: Optional[str] = None
+    replacement_name: str | None = None
 
     # URLs (passed in or discovered during run)
-    homepage: Optional[str] = None
-    release_notes_url: Optional[str] = None
-    repository_url: Optional[str] = None
-    download_url: Optional[str] = None
+    homepage: str | None = None
+    release_notes_url: str | None = None
+    repository_url: str | None = None
+    download_url: str | None = None
 
     # Node outputs (None = not yet run)
-    eol_result: Optional[dict] = None
-    version_result: Optional[dict] = None
-    download_result: Optional[dict] = None
-    cve_result: Optional[dict] = None
-    replacement_result: Optional[dict] = None
+    eol_result: dict | None = None
+    version_result: dict | None = None
+    download_result: dict | None = None
+    cve_result: dict | None = None
+    replacement_result: dict | None = None
 
     # Agent outputs
     hitl_flags: list[HITLFlag] = field(default_factory=list)
@@ -58,13 +56,13 @@ class PackageCheckAgent:
     def run(
         self,
         package: str,
-        ecosystem: Optional[str] = None,
-        versions_in_use: Optional[list[str]] = None,
-        replacement_name: Optional[str] = None,
-        homepage: Optional[str] = None,
-        release_notes_url: Optional[str] = None,
-        repository_url: Optional[str] = None,
-        download_url: Optional[str] = None,
+        ecosystem: str | None = None,
+        versions_in_use: list[str] | None = None,
+        replacement_name: str | None = None,
+        homepage: str | None = None,
+        release_notes_url: str | None = None,
+        repository_url: str | None = None,
+        download_url: str | None = None,
         skip_cves: bool = False,
         skip_download: bool = False,
         skip_summary: bool = False,
@@ -339,7 +337,7 @@ class PackageCheckAgent:
         the recommended version separately.
         """
         node_id = "n1"
-        last_result: Optional[dict] = None
+        last_result: dict | None = None
 
         while self._bump(state, node_id) <= state.max_attempts:
             try:
@@ -424,6 +422,7 @@ class PackageCheckAgent:
     def _n6_summary(self, result: dict, versions_in_use: list[str]) -> None:
         """N6: generate a security summary via multi-turn model agent."""
         import time
+
         from .checkers import summarize
 
         summary = None

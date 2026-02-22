@@ -7,7 +7,6 @@ Three phases:
 """
 
 import logging
-from typing import Optional
 
 from .base import AgentResult, ToolDef, run_agent
 
@@ -37,7 +36,7 @@ def _tool_web_search(query: str) -> dict:
         return {"error": str(exc)}
 
 
-def _tool_check_endoflife_date(product: str, version: Optional[str] = None) -> dict:
+def _tool_check_endoflife_date(product: str, version: str | None = None) -> dict:
     """Query the endoflife.date API for lifecycle data."""
     from ..checkers.eol import check_eol
     versions = [version] if version else []
@@ -276,8 +275,8 @@ def check_eol(
     package: str,
     version: str,
     ecosystem: str,
-    repository_url: Optional[str] = None,
-    homepage: Optional[str] = None,
+    repository_url: str | None = None,
+    homepage: str | None = None,
 ) -> AgentResult:
     """Run the EOL agent for a package version.
 

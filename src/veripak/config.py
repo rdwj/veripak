@@ -7,7 +7,7 @@ Config resolution order (first non-empty wins):
 
 import json
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 _CONFIG_DIR = Path.home() / ".config" / "veripak"
 _CONFIG_FILE = _CONFIG_DIR / "config.json"
@@ -20,7 +20,7 @@ _ENV_TO_CONFIG = {
 }
 
 # Module-level cache; populated lazily by load_config()
-_cache: Optional[dict] = None
+_cache: dict | None = None
 
 
 def config_path() -> Path:

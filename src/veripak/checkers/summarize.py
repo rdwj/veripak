@@ -4,7 +4,6 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Optional
 
 from .. import model_caller
 from .. import tavily as tavily_client
@@ -198,7 +197,7 @@ def _strip_fences(raw: str) -> str:
 # Stage 1: free-form analyst thread
 # ---------------------------------------------------------------------------
 
-def _run_analysis(context: str) -> Optional[str]:
+def _run_analysis(context: str) -> str | None:
     """Run the analyst thread and return free-form prose analysis."""
     rules = _load_rules()
     system = _SYSTEM_ANALYST.format(rules=rules).strip()
@@ -426,8 +425,8 @@ def _rule_based_fallback(result: dict, versions_in_use: list[str]) -> dict:
 
 def generate_summary(
     result: dict,
-    versions_in_use: Optional[list[str]] = None,
-) -> Optional[dict]:
+    versions_in_use: list[str] | None = None,
+) -> dict | None:
     """Run the two-stage summary agent and return a summary dict.
 
     Stage 1: free-form analyst thread (with Tavily tool access).

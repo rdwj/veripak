@@ -7,8 +7,9 @@ a thin loop around litellm tool calling.
 
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any
 
 from .. import model_caller
 
@@ -33,7 +34,7 @@ class HITLFlag:
     field_name: str
     agent: str
     reason: str
-    blocked_url: Optional[str] = None
+    blocked_url: str | None = None
 
 
 @dataclass
@@ -43,7 +44,7 @@ class AgentResult:
     hitl_flags: list[HITLFlag] = field(default_factory=list)
     turns_used: int = 0
     tool_calls_used: int = 0
-    error: Optional[str] = None
+    error: str | None = None
 
 
 def _tool_schemas(tools: list[ToolDef]) -> list[dict]:
@@ -179,7 +180,7 @@ def _extract_on_budget(
     turns_used: int,
     tool_calls_used: int,
     reason: str,
-    tool_schemas: Optional[list] = None,
+    tool_schemas: list | None = None,
 ) -> AgentResult:
     """Give the agent one final turn to produce its answer.
 

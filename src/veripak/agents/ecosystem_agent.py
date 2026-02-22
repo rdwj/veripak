@@ -6,19 +6,18 @@ candidate registry. Falls back to Tavily search if the probe fails.
 """
 
 import logging
-from typing import Optional
 
-from .base import AgentResult, ToolDef, run_agent
 from ..checkers.ecosystem import (
     _ECOSYSTEM_OVERRIDES,
     _REGISTRY_PROBES,
     _VALID_ECOSYSTEMS,
 )
+from .base import ToolDef, run_agent
 
 logger = logging.getLogger(__name__)
 
 # Map ecosystem names to their probe functions for targeted validation
-_PROBE_MAP = {eco: fn for eco, fn in _REGISTRY_PROBES}
+_PROBE_MAP = dict(_REGISTRY_PROBES)
 
 _SYSTEM_PROMPT = """\
 You are determining the software ecosystem for a package. The ecosystem tells us
@@ -118,7 +117,7 @@ _TOOLS = [
 ]
 
 
-def infer_ecosystem(name: str, version: Optional[str] = None) -> Optional[str]:
+def infer_ecosystem(name: str, version: str | None = None) -> str | None:
     """Infer the ecosystem for a package using the Ecosystem Agent.
 
     Checks hard-coded overrides first, then runs the LLM agent which can
@@ -160,7 +159,7 @@ def infer_ecosystem(name: str, version: Optional[str] = None) -> Optional[str]:
     return _fallback_probe_all(name, version)
 
 
-def _fallback_probe_all(name: str, version: Optional[str] = None) -> Optional[str]:
+def _fallback_probe_all(name: str, version: str | None = None) -> str | None:
     """Deterministic fallback: probe all registries sequentially."""
     for eco, probe_fn in _REGISTRY_PROBES:
         try:

@@ -6,12 +6,10 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Optional
 
-from packaging.version import Version, InvalidVersion
+from packaging.version import InvalidVersion, Version
 
-from .. import config
-from .. import model_caller
+from .. import config, model_caller
 from .. import tavily as tavily_client
 
 _HEADERS = {"User-Agent": "veripak/0.1"}
@@ -131,7 +129,7 @@ def _extract_nvd_severity(cve_item: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _http_post_json(url: str, payload: dict) -> tuple[Optional[int], Optional[bytes]]:
+def _http_post_json(url: str, payload: dict) -> tuple[int | None, bytes | None]:
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
         url,
@@ -148,7 +146,7 @@ def _http_post_json(url: str, payload: dict) -> tuple[Optional[int], Optional[by
         return None, None
 
 
-def _parse_body(body: Optional[bytes]) -> Optional[dict]:
+def _parse_body(body: bytes | None) -> dict | None:
     if not body:
         return None
     try:
@@ -435,7 +433,6 @@ def _cpe_matches_package(cve_item: dict, name: str, ecosystem: str) -> bool:
                 # CPE 2.3 format: cpe:2.3:a:vendor:product:version:...
                 parts = criteria.split(":")
                 if len(parts) >= 5:
-                    vendor = parts[3].lower()
                     product = parts[4].lower()
                     # Check product match (allow for underscores/hyphens)
                     product_variants = {product, product.replace("_", "-"), product.replace("-", "_")}

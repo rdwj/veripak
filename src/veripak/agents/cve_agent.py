@@ -4,32 +4,27 @@ Replaces the fixed code path in cves.py with an agent that can reason about
 coverage gaps, iterate on incomplete results, and cross-reference advisory pages.
 """
 
-import json
 import logging
 import re
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Optional
 
-from .base import AgentResult, ToolDef, run_agent
+from .. import config
 from ..checkers.cves import (
-    OSV_ECOSYSTEM_MAP,
-    OSV_ECOSYSTEMS,
-    NVD_ECOSYSTEMS,
+    _CPE_OVERRIDES,
     _JAVA_OSV_NAMES,
     _JS_OSV_NAMES,
-    _osv_query_version,
-    _osv_query_package,
-    _osv_normalise,
-    _dedupe_cross_source,
+    NVD_ECOSYSTEMS,
+    OSV_ECOSYSTEM_MAP,
+    OSV_ECOSYSTEMS,
+    _extract_nvd_severity,
     _nvd_fetch,
     _nvd_fetch_by_cpe_name,
-    _extract_nvd_severity,
-    _CPE_OVERRIDES,
+    _osv_query_package,
+    _osv_query_version,
 )
-from .. import config
+from .base import AgentResult, ToolDef, run_agent
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +36,7 @@ logger = logging.getLogger(__name__)
 def _tool_osv_query(
     package: str,
     ecosystem: str,
-    version: Optional[str] = None,
+    version: str | None = None,
 ) -> dict:
     """Query OSV.dev for vulnerabilities affecting a package/version."""
     osv_eco = OSV_ECOSYSTEM_MAP.get(ecosystem)
@@ -77,7 +72,7 @@ def _tool_osv_query(
 def _tool_nvd_search(
     keyword: str,
     results_per_page: int = 100,
-    cpe_name: Optional[str] = None,
+    cpe_name: str | None = None,
 ) -> dict:
     """Search NVD for CVEs by keyword or CPE name."""
     api_key = config.get("nvd_api_key") or ""
@@ -270,7 +265,7 @@ def check_cves(
     package: str,
     version: str,
     ecosystem: str,
-    versions: Optional[list[str]] = None,
+    versions: list[str] | None = None,
     latest_version: str = "",
     replacement_name: str = "",
 ) -> AgentResult:

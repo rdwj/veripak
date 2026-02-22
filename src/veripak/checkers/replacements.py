@@ -5,10 +5,8 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Optional
 
-from .. import tavily
-from .. import model_caller
+from .. import model_caller, tavily
 
 _HEADERS = {"User-Agent": "veripak/0.1"}
 _TIMEOUT = 12
@@ -28,7 +26,7 @@ ECOSYSTEM_LABELS = {
 # ---------------------------------------------------------------------------
 
 
-def _request(url: str, method: str = "GET") -> tuple[Optional[int], Optional[bytes]]:
+def _request(url: str, method: str = "GET") -> tuple[int | None, bytes | None]:
     try:
         req = urllib.request.Request(url, headers=_HEADERS, method=method)
         with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
@@ -40,7 +38,7 @@ def _request(url: str, method: str = "GET") -> tuple[Optional[int], Optional[byt
         return None, None
 
 
-def _get_json(url: str) -> Optional[dict]:
+def _get_json(url: str) -> dict | None:
     status, body = _request(url, "GET")
     if status == 200 and body:
         try:
@@ -55,7 +53,7 @@ def _get_json(url: str) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 
 
-def _check_pypi(repl_name: str) -> tuple[Optional[bool], Optional[str]]:
+def _check_pypi(repl_name: str) -> tuple[bool | None, str | None]:
     candidates = [repl_name]
     if " " in repl_name:
         candidates += [repl_name.replace(" ", "-"), repl_name.replace(" ", "_")]
@@ -69,7 +67,7 @@ def _check_pypi(repl_name: str) -> tuple[Optional[bool], Optional[str]]:
     return False, f"Not found on PyPI (tried: {', '.join(candidates)})"
 
 
-def _check_npm(repl_name: str) -> tuple[Optional[bool], Optional[str]]:
+def _check_npm(repl_name: str) -> tuple[bool | None, str | None]:
     norm = repl_name.lower().replace(" ", "-")
     data = _get_json(f"https://registry.npmjs.org/{urllib.parse.quote(norm, safe='@/')}")
     if data:
@@ -78,7 +76,7 @@ def _check_npm(repl_name: str) -> tuple[Optional[bool], Optional[str]]:
     return False, f"Not found on npm (queried: {norm})"
 
 
-def _check_go(repl_name: str) -> tuple[Optional[bool], Optional[str]]:
+def _check_go(repl_name: str) -> tuple[bool | None, str | None]:
     candidate = repl_name.strip().lower().replace(" ", "")
     if "." not in candidate:
         return None, "Go replacement name is not a resolvable module path; manual check required"
@@ -90,7 +88,7 @@ def _check_go(repl_name: str) -> tuple[Optional[bool], Optional[str]]:
     return False, f"Module not found at Go proxy (tried: {candidate})"
 
 
-def _check_nuget(repl_name: str) -> tuple[Optional[bool], Optional[str]]:
+def _check_nuget(repl_name: str) -> tuple[bool | None, str | None]:
     norm = re.sub(r"[^a-zA-Z0-9._-]", ".", repl_name).lower()
     status, _ = _request(f"https://api.nuget.org/v3-flatcontainer/{norm}/index.json")
     if status == 200:
@@ -98,7 +96,7 @@ def _check_nuget(repl_name: str) -> tuple[Optional[bool], Optional[str]]:
     return False, f"Not found on NuGet (tried id: {norm})"
 
 
-def _check_maven(repl_name: str) -> tuple[Optional[bool], Optional[str]]:
+def _check_maven(repl_name: str) -> tuple[bool | None, str | None]:
     artifact = re.sub(r"[^a-zA-Z0-9._-]", "-", repl_name).lower()
     data = _get_json(
         f"https://search.maven.org/solrsearch/select"
@@ -111,7 +109,7 @@ def _check_maven(repl_name: str) -> tuple[Optional[bool], Optional[str]]:
     return False, f"Not found on Maven Central by artifact name '{artifact}'"
 
 
-def _check_cpan(repl_name: str) -> tuple[Optional[bool], Optional[str]]:
+def _check_cpan(repl_name: str) -> tuple[bool | None, str | None]:
     dist = repl_name.replace("::", "-").replace(" ", "-")
     data = _get_json(
         f"https://fastapi.metacpan.org/v1/distribution/{urllib.parse.quote(dist)}"
@@ -162,7 +160,7 @@ def _parse_json_response(text: str) -> dict:
 
 def _validate_via_model(
     repl_name: str, label: str
-) -> tuple[Optional[bool], str, Optional[str]]:
+) -> tuple[bool | None, str, str | None]:
     """Validate a replacement using Tavily + model.
 
     Returns (confirmed, notes, proof).
@@ -225,9 +223,9 @@ def check_replacement(replacement_name: str, ecosystem: str) -> dict:
     if not replacement_name:
         return {"confirmed": None, "method": "not_applicable", "notes": None, "proof": None}
 
-    confirmed: Optional[bool] = None
-    notes: Optional[str] = None
-    proof: Optional[str] = None
+    confirmed: bool | None = None
+    notes: str | None = None
+    proof: str | None = None
     method: str = "registry_api"
 
     if ecosystem in REGISTRY_API_ECOSYSTEMS:
