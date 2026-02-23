@@ -10,6 +10,8 @@ pip install veripak
 
 ## Setup
 
+`vpk` is available as a shorthand alias for `veripak` in all commands below.
+
 ```bash
 veripak config
 ```
@@ -31,6 +33,8 @@ veripak check openssl --ecosystem c --json
 # Skip CVE check (faster)
 veripak check requests --ecosystem python --no-cves
 ```
+
+Additional flags not shown above: `--replacement` (known replacement package name), `--release-notes-url`, `--repository-url`, `--homepage`, `--download-url` (supply known URLs to skip discovery), `--no-download` (skip download validation), and `--no-summary` (skip AI security summary). Run `veripak check --help` for the full list.
 
 ## How It Works
 
@@ -62,13 +66,13 @@ veripak check requests --ecosystem python --no-cves
          |  TRACK A        |     |  TRACK B               |
          |                 |     |                        |
          |  N1: VERSION    |     |  EOL AGENT             |
-         |  (registry API) |     |                        |
-         |       |         |     |  Phase 1: Is version   |
-         |       v         |     |    EOL?                |
-         |  N2: DOWNLOAD   |     |  Phase 2: Is project   |
-         |   discovery     |     |    dead?               |
-         |       |         |     |  Phase 3: What's the   |
-         |       v         |     |    replacement?        |
+         |  (registry API) |     |  (single agentic loop) |
+         |       |         |     |                        |
+         |       v         |     |  - Is version EOL?     |
+         |  N2: DOWNLOAD   |     |  - Is project dead?    |
+         |   discovery     |     |  - What's the          |
+         |       |         |     |    replacement?        |
+         |       v         |     |                        |
          |  N3: DOWNLOAD   |     |                        |
          |   validation    |     +------------+-----------+
          +--------+--------+                  |
@@ -107,7 +111,7 @@ veripak check requests --ecosystem python --no-cves
                     +-------------------------+
 ```
 
-Three specialized LLM agents (Ecosystem, EOL, CVE) replace fixed code paths, enabling reasoning about gaps and iterating on incomplete results. The agents use tools (registry probes, web search, GitHub API, advisory page fetching) and can flag fields for human review when data sources are inaccessible or signals are contradictory. Tracks A+B and C+D run in parallel via `ThreadPoolExecutor` for wall-clock speedup without async complexity.
+Four specialized LLM agents (Ecosystem, EOL, CVE, Summary) replace fixed code paths, enabling reasoning about gaps and iterating on incomplete results. The agents use tools (registry probes, web search, GitHub API, advisory page fetching) and can flag fields for human review when data sources are inaccessible or signals are contradictory. Tracks A+B and C+D run in parallel via `ThreadPoolExecutor` for wall-clock speedup without async complexity.
 
 ## Supported ecosystems
 
@@ -127,3 +131,21 @@ Three specialized LLM agents (Ecosystem, EOL, CVE) replace fixed code paths, ena
 veripak uses a local or hosted LLM to extract version information from web search results for non-programmatic ecosystems (C, C++, system packages, etc.).
 
 Supported backends: Ollama (default), Anthropic, OpenAI, vLLM (self-hosted).
+
+## Changelog
+
+### 0.2.0
+
+- Parallel agent-based pipeline (v2) replacing serial checker pipeline
+- Token usage tracking and cost estimation
+- Agent budget exhaustion handling
+- EOL cross-pollination from EOL agent to version track
+- Summary prompt refinements for accuracy
+- Project automation: CLAUDE.md, `/create-release` slash command, `.claude/` configuration
+
+### 0.1.0
+
+- Initial release with hybrid agent/checker architecture
+- CLI with `veripak check` and `veripak config` commands
+- Support for Ollama, Anthropic, OpenAI, and vLLM backends
+- CI/CD pipeline with GitHub Actions and PyPI trusted publishing
