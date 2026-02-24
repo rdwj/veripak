@@ -52,11 +52,12 @@ def cmd_config() -> None:
     tavily_key = click.prompt(
         "Tavily API key",
         default=cfg.get("tavily_api_key", ""),
-        hide_input=False,
+        hide_input=True,
     )
     nvd_key = click.prompt(
         "NVD API key (optional, press enter to skip)",
         default=cfg.get("nvd_api_key", ""),
+        hide_input=True,
     )
     anthropic_key = click.prompt(
         "Anthropic API key (optional fallback, press enter to skip)",
