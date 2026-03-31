@@ -69,7 +69,7 @@ def _get_anthropic_client(api_key: str | None = None):
 def _resolve_model() -> tuple[str, str, str | None]:
     """Return (model_name, backend, base_url).
 
-    Strips old litellm prefixes (ollama/, openai/). For ollama/vllm,
+    Strips legacy provider prefixes (ollama/, openai/). For ollama/vllm,
     appends /v1 to base_url if not already present. For openai/anthropic,
     returns None for base_url.
     """
@@ -79,7 +79,7 @@ def _resolve_model() -> tuple[str, str, str | None]:
         "OLLAMA_BASE_URL", "http://localhost:11434"
     )
 
-    # Strip litellm prefixes
+    # Strip legacy provider prefixes
     if model.startswith("ollama/"):
         model = model[len("ollama/"):]
     elif model.startswith("openai/"):
