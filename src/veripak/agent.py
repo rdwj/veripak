@@ -66,22 +66,44 @@ class PackageCheckAgent:
         skip_cves: bool = False,
         skip_download: bool = False,
         skip_summary: bool = False,
+        deterministic_only: bool = False,
     ) -> dict:
         """Run the full audit pipeline and return a consolidated result dict."""
 
-        from . import model_caller
-        model_caller.reset_usage()
+        if deterministic_only:
+            skip_summary = True
+
+        if not deterministic_only:
+            from . import model_caller
+            model_caller.reset_usage()
 
         # --- E0: Ecosystem agent (blocking) ---
         if not ecosystem:
-            from .agents.ecosystem_agent import infer_ecosystem
-            version_hint = (versions_in_use[0] if versions_in_use else None)
-            ecosystem = infer_ecosystem(package, version=version_hint)
-            if not ecosystem:
-                raise ValueError(
-                    f"Could not infer ecosystem for '{package}'. "
-                    "Please supply the ecosystem explicitly."
-                )
+            if deterministic_only:
+                from .checkers.ecosystem import _ECOSYSTEM_OVERRIDES, _REGISTRY_PROBES
+                version_hint = (versions_in_use[0] if versions_in_use else None)
+                override = _ECOSYSTEM_OVERRIDES.get(package.lower())
+                if override:
+                    ecosystem = override
+                else:
+                    for eco, probe_fn in _REGISTRY_PROBES:
+                        if probe_fn(package, version_hint):
+                            ecosystem = eco
+                            break
+                if not ecosystem:
+                    raise ValueError(
+                        f"Could not infer ecosystem for '{package}' from registry probes. "
+                        "Please supply the ecosystem explicitly."
+                    )
+            else:
+                from .agents.ecosystem_agent import infer_ecosystem
+                version_hint = (versions_in_use[0] if versions_in_use else None)
+                ecosystem = infer_ecosystem(package, version=version_hint)
+                if not ecosystem:
+                    raise ValueError(
+                        f"Could not infer ecosystem for '{package}'. "
+                        "Please supply the ecosystem explicitly."
+                    )
 
         state = AgentState(
             package=package,
@@ -97,7 +119,10 @@ class PackageCheckAgent:
         # --- Fork 1: Track A (version + download) || Track B (EOL agent) ---
         with ThreadPoolExecutor(max_workers=2) as pool:
             track_a = pool.submit(self._track_a_version_download, state, skip_download)
-            track_b = pool.submit(self._track_b_eol, state)
+            track_b = pool.submit(
+                self._track_b_eol_deterministic if deterministic_only else self._track_b_eol,
+                state,
+            )
 
             # Join 1: wait for both; collect exceptions from each independently
             for label, future in [("track_a", track_a), ("track_b", track_b)]:
@@ -152,7 +177,10 @@ class PackageCheckAgent:
                 futures.append(pool.submit(self._track_c_replacement, state, repl_name))
 
             if not skip_cves:
-                futures.append(pool.submit(self._track_d_cves, state))
+                futures.append(pool.submit(
+                    self._track_d_cves_deterministic if deterministic_only else self._track_d_cves,
+                    state,
+                ))
 
             # Join 2: wait for all; collect exceptions independently
             for f in futures:
@@ -170,7 +198,11 @@ class PackageCheckAgent:
         # Feed summary discoveries back to raw blocks
         self._backfill_from_summary(result)
 
-        result["_usage"] = model_caller.get_usage_summary()
+        if deterministic_only:
+            result["_usage"] = None
+        else:
+            from . import model_caller
+            result["_usage"] = model_caller.get_usage_summary()
 
         return result
 
@@ -244,6 +276,20 @@ class PackageCheckAgent:
 
         if agent_result.error:
             state.errors.append(f"eol_agent: {agent_result.error}")
+
+    def _track_b_eol_deterministic(self, state: AgentState) -> None:
+        """Track B (deterministic): EOL check via endoflife.date API only."""
+        from .checkers import eol
+
+        try:
+            result = eol.check_eol(state.package, state.versions_in_use)
+        except Exception as exc:
+            state.errors.append(f"eol_checker: {exc}")
+            result = {
+                "eol": None, "eol_date": None, "cycle": None,
+                "latest_in_cycle": None, "product": None,
+            }
+        state.eol_result = result
 
     # ------------------------------------------------------------------
     # Track C: Replacement validation (deterministic)
@@ -324,6 +370,32 @@ class PackageCheckAgent:
 
         if agent_result.error:
             state.errors.append(f"cve_agent: {agent_result.error}")
+
+    def _track_d_cves_deterministic(self, state: AgentState) -> None:
+        """Track D (deterministic): CVE check via OSV.dev/NVD only."""
+        from .checkers import cves
+
+        latest_version = (state.version_result or {}).get("version") or ""
+
+        try:
+            result = cves.check_cves(
+                name=state.package,
+                ecosystem=state.ecosystem,
+                versions=state.versions_in_use,
+                latest_version=latest_version,
+                replacement_name=state.replacement_name or "",
+            )
+        except Exception as exc:
+            state.errors.append(f"cve_checker: {exc}")
+            result = {
+                "method": "error",
+                "versions_cves": [],
+                "latest_cves": [],
+                "replacement_cves": [],
+                "total_count": 0,
+                "high_critical_count": 0,
+            }
+        state.cve_result = result
 
     # ------------------------------------------------------------------
     # Deterministic node implementations (kept from v1)

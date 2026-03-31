@@ -22,14 +22,9 @@ def _echo_check(label: str, value: str) -> None:
 
 
 @click.group()
+@click.version_option(version=__version__, prog_name="veripak")
 def main() -> None:
     """veripak — open-source package auditor."""
-
-
-@main.command("version")
-def cmd_version() -> None:
-    """Print the veripak version."""
-    click.echo(f"veripak {__version__}")
 
 
 @main.command("config")
@@ -251,3 +246,16 @@ def cmd_check(
         click.echo(f"  Tokens:      {prompt_t:,} prompt + {comp_t:,} completion = {total_t:,} total (${cost:.4f})")
 
     click.echo()
+
+
+@main.command("serve")
+def cmd_serve() -> None:
+    """Start veripak as an MCP server (stdio transport)."""
+    try:
+        from .mcp_server import create_server
+    except ImportError as exc:
+        raise click.UsageError(
+            "MCP support requires the 'mcp' extra: pip install veripak[mcp]"
+        ) from exc
+    server = create_server()
+    server.run(transport="stdio")

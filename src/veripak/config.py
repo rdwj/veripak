@@ -1,11 +1,13 @@
 """veripak configuration: read/write ~/.config/veripak/config.json.
 
-Config resolution order (first non-empty wins):
-  1. ~/.config/veripak/config.json
-  2. .env file in CWD (KEY=VALUE format, mapped to config keys)
+Config resolution order (highest priority wins):
+  1. Environment variables (os.environ)
+  2. ~/.config/veripak/config.json
+  3. .env file in CWD (KEY=VALUE format, mapped to config keys)
 """
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -81,6 +83,12 @@ def load_config() -> dict:
     for key, value in dotenv_vals.items():
         if not cfg.get(key):
             cfg[key] = value
+
+    # Override with environment variables (highest priority)
+    for env_key, config_key in _ENV_TO_CONFIG.items():
+        env_val = os.environ.get(env_key, "").strip()
+        if env_val:
+            cfg[config_key] = env_val
 
     _cache = cfg
     return _cache
