@@ -341,7 +341,7 @@ Line length limit: 100 (ruff). Rule sets: E, W, F, I, B, C4, UP.
 
 ## Changelog
 
-### 0.3.0 (unreleased)
+### 0.3.0
 
 - MCP server support (`veripak serve`) with FastMCP v3
 - `veripak --version` flag
