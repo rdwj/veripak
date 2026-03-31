@@ -51,7 +51,7 @@ The `--json` path runs the full agent pipeline (including LLM calls), so it requ
 Add via CLI:
 
 ```bash
-claude mcp add veripak -e TAVILY_API_KEY=tvly-xxx -- veripak serve
+claude mcp add veripak -e TAVILY_API_KEY=tvly-xxx -e NVD_API_KEY=xxx -- veripak serve
 ```
 
 Or in your project's `.mcp.json`:
@@ -63,7 +63,8 @@ Or in your project's `.mcp.json`:
       "command": "veripak",
       "args": ["serve"],
       "env": {
-        "TAVILY_API_KEY": "your-key-here"
+        "TAVILY_API_KEY": "your-key-here",
+        "NVD_API_KEY": "your-key-here"
       }
     }
   }
@@ -81,7 +82,8 @@ In Settings > Developer > Edit Config (`claude_desktop_config.json`):
       "command": "veripak",
       "args": ["serve"],
       "env": {
-        "TAVILY_API_KEY": "your-key-here"
+        "TAVILY_API_KEY": "your-key-here",
+        "NVD_API_KEY": "your-key-here"
       }
     }
   }
@@ -99,6 +101,7 @@ args = ["serve"]
 
 [mcp_servers.veripak.env]
 TAVILY_API_KEY = "your-key-here"
+NVD_API_KEY = "your-key-here"
 ```
 
 ### Continue (VS Code / JetBrains)
@@ -113,6 +116,7 @@ mcpServers:
       - serve
     env:
       TAVILY_API_KEY: your-key-here
+      NVD_API_KEY: your-key-here
 ```
 
 MCP tools are only available in Continue's Agent mode.
@@ -128,7 +132,8 @@ In `opencode.json`:
       "type": "local",
       "command": ["veripak", "serve"],
       "environment": {
-        "TAVILY_API_KEY": "your-key-here"
+        "TAVILY_API_KEY": "your-key-here",
+        "NVD_API_KEY": "your-key-here"
       }
     }
   }
@@ -147,7 +152,7 @@ No additional configuration needed. Pi will discover veripak's capabilities from
 
 The community fork [oh-my-pi](https://github.com/can1357/oh-my-pi) does add native MCP support. If you're using that fork, configure it the same way as Claude Desktop (JSON with `mcpServers` key).
 
-For all of the MCP configurations above, `NVD_API_KEY` is optional but recommended. Without it, NVD rate limits are 5 requests per 30 seconds. With it, you get 50 requests per 30 seconds. Add it alongside `TAVILY_API_KEY` in the `env` block.
+Both `TAVILY_API_KEY` and `NVD_API_KEY` are included in the examples above. See [API keys](#api-keys) for details on obtaining them.
 
 ## CLI usage
 
@@ -203,9 +208,9 @@ Additional flags: `--release-notes-url`, `--repository-url`, `--homepage`, `--do
 
 | Key | Required | Purpose |
 |---|---|---|
-| `TAVILY_API_KEY` | Recommended | Web search for non-registry ecosystems (c, cpp, system). Not strictly required for registry-based ecosystems. |
+| `TAVILY_API_KEY` | Recommended | Web search for non-registry ecosystems (c, cpp, system). Not strictly required for registry-based ecosystems. [Get a key](https://app.tavily.com/home) (free tier: 1,000 requests/month). |
+| `NVD_API_KEY` | Recommended | CVE lookups via the National Vulnerability Database. Without a key, rate limits are 5 requests per 30 seconds; with one, 50 per 30 seconds. [Request a key](https://nvd.nist.gov/developers/request-an-api-key) (free, instant via email). |
 | `ANTHROPIC_API_KEY` | CLI only | LLM calls via litellm for the agent pipeline. Not needed when using the MCP server. |
-| `NVD_API_KEY` | Optional | Raises NVD CVE rate limit from 5 req/30s to 50 req/30s |
 
 Keys are resolved in this order: environment variables (highest priority), then `~/.config/veripak/config.json`, then `.env` in the project root.
 
