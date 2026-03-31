@@ -37,7 +37,7 @@ src/veripak/
   agent.py             # PackageCheckAgent orchestrator
   cli.py               # Click entry point (veripak / vpk)
   config.py            # Config file load/save (~/.veripak/config.yaml)
-  model_caller.py      # LLM backend abstraction (litellm); tracks token usage
+  model_caller.py      # LLM backend abstraction (openai + anthropic SDKs); tracks token usage
   tavily.py            # Tavily search helper
   version.py           # __version__ constant (must stay in sync with pyproject.toml)
   agents/
@@ -116,7 +116,8 @@ Monitor: https://github.com/rdwj/veripak/actions
 
 | Key | Required | Purpose |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | Yes (agent pipeline) | LLM calls via litellm |
+| `ANTHROPIC_API_KEY` | Yes (agent pipeline) | LLM calls via anthropic SDK |
+| `OPENAI_API_KEY` | Only if openai backend | LLM calls via openai SDK |
 | `TAVILY_API_KEY` | Yes | Web search for non-programmatic ecosystems (c, cpp, system, etc.) |
 | `NVD_API_KEY` | Optional | Raises CVE rate limit from 5 req/10s to 50 req/30s |
 

@@ -2,7 +2,7 @@
 
 Provides tool registration, multi-turn conversation loop with model_caller,
 turn budget enforcement, and HITL flag collection. Not a framework — just
-a thin loop around litellm tool calling.
+a thin loop around model_caller tool calling.
 """
 
 import json

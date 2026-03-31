@@ -17,6 +17,7 @@ _CONFIG_FILE = _CONFIG_DIR / "config.json"
 # Map environment variable names to config keys.
 _ENV_TO_CONFIG = {
     "ANTHROPIC_API_KEY": "anthropic_api_key",
+    "OPENAI_API_KEY": "openai_api_key",
     "TAVILY_API_KEY": "tavily_api_key",
     "NVD_API_KEY": "nvd_api_key",
 }

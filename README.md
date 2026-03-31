@@ -218,6 +218,8 @@ Run `veripak config` to set keys and LLM backend interactively. The config wizar
 
 ## Supported ecosystems
 
+veripak supports packages from 7 registry-backed ecosystems (PyPI, npm, Maven Central, Go proxy, NuGet, MetaCPAN, Packagist) plus a catch-all for non-registry software (C/C++ libraries, system packages, desktop apps, drivers) that uses web search + LLM inference.
+
 | Ecosystem | Version source | CVE source |
 |---|---|---|
 | python | PyPI API | OSV.dev |
