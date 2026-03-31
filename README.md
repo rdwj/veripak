@@ -210,7 +210,7 @@ Additional flags: `--release-notes-url`, `--repository-url`, `--homepage`, `--do
 |---|---|---|
 | `TAVILY_API_KEY` | Recommended | Web search for non-registry ecosystems (c, cpp, system). Not strictly required for registry-based ecosystems. [Get a key](https://app.tavily.com/home) (free tier: 1,000 requests/month). |
 | `NVD_API_KEY` | Recommended | CVE lookups via the National Vulnerability Database. Without a key, rate limits are 5 requests per 30 seconds; with one, 50 per 30 seconds. [Request a key](https://nvd.nist.gov/developers/request-an-api-key) (free, instant via email). |
-| `ANTHROPIC_API_KEY` | CLI only | LLM calls via litellm for the agent pipeline. Not needed when using the MCP server. |
+| `ANTHROPIC_API_KEY` | CLI only | LLM calls via the Anthropic SDK for the agent pipeline. Not needed when using the MCP server. |
 
 Keys are resolved in this order: environment variables (highest priority), then `~/.config/veripak/config.json`, then `.env` in the project root.
 
@@ -347,6 +347,14 @@ python -m build
 Line length limit: 100 (ruff). Rule sets: E, W, F, I, B, C4, UP.
 
 ## Changelog
+
+### 0.4.1
+
+- Remove remaining litellm references from documentation and comments
+
+### 0.4.0
+
+- Replace litellm with direct openai + anthropic SDKs for improved security and reduced dependency footprint
 
 ### 0.3.0
 
