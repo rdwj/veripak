@@ -187,6 +187,28 @@ def _infer_via_model(name: str, version: str | None = None) -> str | None:
     return None
 
 
+def detect_ecosystem_ambiguity(
+    name: str, version: str | None = None,
+) -> list[str]:
+    """Probe all programmatic registries and return ecosystems where the package exists.
+
+    Returns a list of ecosystem names (e.g., ["python", "java"]) where the
+    package name resolves.  Empty list means no registry match.  Overridden
+    packages are excluded — they already have a known-good ecosystem.
+    """
+    if _ECOSYSTEM_OVERRIDES.get(name.lower()):
+        return []
+
+    found: list[str] = []
+    for ecosystem, probe_fn in _REGISTRY_PROBES:
+        try:
+            if probe_fn(name, version):
+                found.append(ecosystem)
+        except Exception:
+            pass
+    return found
+
+
 def infer_ecosystem(name: str, version: str | None = None) -> str | None:
     """Infer the ecosystem for a package.
 

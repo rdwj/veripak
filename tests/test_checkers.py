@@ -15,7 +15,7 @@ from veripak.checkers.download_discovery import (
     _extract_tarballs_from_html,
     _is_tarball,
 )
-from veripak.checkers.ecosystem import infer_ecosystem
+from veripak.checkers.ecosystem import detect_ecosystem_ambiguity, infer_ecosystem
 from veripak.checkers.eol import (
     _extract_branch,
     _is_eol,
@@ -730,6 +730,69 @@ def test_infer_via_model_rejects_invalid_ecosystem():
         with patch("veripak.checkers.ecosystem.model_caller.call_model", return_value="ruby"):
             result = _infer_via_model("rails")
     assert result is None, f"Expected None for invalid ecosystem 'ruby', got {result!r}"
+
+
+# ---------------------------------------------------------------------------
+# detect_ecosystem_ambiguity
+# ---------------------------------------------------------------------------
+
+
+def test_detect_ecosystem_ambiguity_multiple():
+    """Package found in two registries returns both ecosystems."""
+    with patch("veripak.checkers.ecosystem._REGISTRY_PROBES", [
+        ("python", lambda n, v=None: True),
+        ("java", lambda n, v=None: True),
+        ("javascript", lambda n, v=None: False),
+    ]):
+        result = detect_ecosystem_ambiguity("jsoup")
+    assert result == ["python", "java"], (
+        f"Expected ['python', 'java'], got {result}"
+    )
+
+
+def test_detect_ecosystem_ambiguity_single():
+    """Package found in exactly one registry returns a single-item list."""
+    with patch("veripak.checkers.ecosystem._REGISTRY_PROBES", [
+        ("python", lambda n, v=None: False),
+        ("java", lambda n, v=None: True),
+    ]):
+        result = detect_ecosystem_ambiguity("jsoup")
+    assert result == ["java"], f"Expected ['java'], got {result}"
+
+
+def test_detect_ecosystem_ambiguity_none():
+    """No registry matches returns an empty list."""
+    with patch("veripak.checkers.ecosystem._REGISTRY_PROBES", [
+        ("python", lambda n, v=None: False),
+        ("java", lambda n, v=None: False),
+    ]):
+        result = detect_ecosystem_ambiguity("unknownpkg")
+    assert result == [], f"Expected [], got {result}"
+
+
+def test_detect_ecosystem_ambiguity_exception_tolerant():
+    """A failing probe is skipped; remaining probes still run."""
+    def raise_error(n, v=None):
+        raise RuntimeError("network failure")
+
+    with patch("veripak.checkers.ecosystem._REGISTRY_PROBES", [
+        ("python", raise_error),
+        ("java", lambda n, v=None: True),
+        ("javascript", lambda n, v=None: True),
+    ]):
+        result = detect_ecosystem_ambiguity("somepkg")
+    assert result == ["java", "javascript"], (
+        f"Expected ['java', 'javascript'] (python probe error skipped),"
+        f" got {result}"
+    )
+
+
+def test_detect_ecosystem_ambiguity_skips_overrides():
+    """Packages in the override map return empty -- no probing needed."""
+    result = detect_ecosystem_ambiguity("grafana")
+    assert result == [], (
+        f"Expected [] for overridden package, got {result}"
+    )
 
 
 # ---------------------------------------------------------------------------

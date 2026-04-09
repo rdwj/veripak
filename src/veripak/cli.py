@@ -184,17 +184,37 @@ def cmd_check(
 ) -> None:
     """Audit PACKAGE in ECOSYSTEM."""
     if not ecosystem:
-        from .checkers.ecosystem import infer_ecosystem
-        inferred = infer_ecosystem(
-            package,
-            version=version_list.split(",")[0].strip() if version_list.strip() else None,
+        from .checkers.ecosystem import (
+            detect_ecosystem_ambiguity,
+            infer_ecosystem,
         )
-        if not inferred:
+
+        version_hint = (
+            version_list.split(",")[0].strip()
+            if version_list.strip() else None
+        )
+
+        matches = detect_ecosystem_ambiguity(package, version_hint)
+        if len(matches) > 1:
+            eco_list = ", ".join(matches)
             raise click.UsageError(
-                f"Could not infer ecosystem for '{package}'. "
-                "Please specify it with --ecosystem."
+                f"'{package}' exists in multiple ecosystems:"
+                f" {eco_list}. "
+                "Please specify the ecosystem with"
+                " --ecosystem / -e."
             )
-        ecosystem = inferred
+        if len(matches) == 1:
+            ecosystem = matches[0]
+        else:
+            # No registry matches -- try model-based inference.
+            inferred = infer_ecosystem(package, version=version_hint)
+            if not inferred:
+                raise click.UsageError(
+                    f"Could not infer ecosystem for"
+                    f" '{package}'. "
+                    "Please specify it with --ecosystem."
+                )
+            ecosystem = inferred
         inferred_note = "  (inferred)"
     else:
         inferred_note = ""
