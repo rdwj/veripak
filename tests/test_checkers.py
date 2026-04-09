@@ -23,8 +23,10 @@ from veripak.checkers.eol import (
     check_eol,
 )
 from veripak.checkers.versions import (
+    _maven_metadata_version,
     _parse_json_response,
     _version_tuple,
+    check_maven,
     check_pypi,
     is_prerelease,
     is_stable,
@@ -728,3 +730,209 @@ def test_infer_via_model_rejects_invalid_ecosystem():
         with patch("veripak.checkers.ecosystem.model_caller.call_model", return_value="ruby"):
             result = _infer_via_model("rails")
     assert result is None, f"Expected None for invalid ecosystem 'ruby', got {result!r}"
+
+
+# ---------------------------------------------------------------------------
+# _maven_metadata_version
+# ---------------------------------------------------------------------------
+
+_JSOUP_METADATA_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<metadata>
+  <groupId>org.jsoup</groupId>
+  <artifactId>jsoup</artifactId>
+  <versioning>
+    <latest>1.21.1</latest>
+    <release>1.21.1</release>
+    <versions>
+      <version>1.15.4</version>
+      <version>1.21.1</version>
+    </versions>
+    <lastUpdated>20250101000000</lastUpdated>
+  </versioning>
+</metadata>
+"""
+
+_METADATA_XML_LATEST_ONLY = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<metadata>
+  <groupId>com.example</groupId>
+  <artifactId>example</artifactId>
+  <versioning>
+    <latest>2.0.0</latest>
+    <versions>
+      <version>2.0.0</version>
+    </versions>
+  </versioning>
+</metadata>
+"""
+
+_METADATA_XML_NO_VERSIONING = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<metadata>
+  <groupId>com.example</groupId>
+  <artifactId>example</artifactId>
+</metadata>
+"""
+
+
+def test_maven_metadata_version_release_tag():
+    """Extracts version from the <release> tag."""
+    with patch(
+        "veripak.checkers.versions._http_get_text",
+        return_value=_JSOUP_METADATA_XML,
+    ):
+        result = _maven_metadata_version("org.jsoup", "jsoup")
+    assert result == "1.21.1", (
+        f"Expected '1.21.1' from <release> tag, got {result!r}"
+    )
+
+
+def test_maven_metadata_version_latest_fallback():
+    """Falls back to <latest> when <release> is absent."""
+    with patch(
+        "veripak.checkers.versions._http_get_text",
+        return_value=_METADATA_XML_LATEST_ONLY,
+    ):
+        result = _maven_metadata_version("com.example", "example")
+    assert result == "2.0.0", (
+        f"Expected '2.0.0' from <latest> tag, got {result!r}"
+    )
+
+
+def test_maven_metadata_version_http_failure():
+    """Returns None when the HTTP fetch fails."""
+    with patch(
+        "veripak.checkers.versions._http_get_text",
+        return_value=None,
+    ):
+        result = _maven_metadata_version("org.jsoup", "jsoup")
+    assert result is None, f"Expected None on HTTP failure, got {result!r}"
+
+
+def test_maven_metadata_version_bad_xml():
+    """Returns None when the XML is malformed."""
+    with patch(
+        "veripak.checkers.versions._http_get_text",
+        return_value="this is not xml",
+    ):
+        result = _maven_metadata_version("org.jsoup", "jsoup")
+    assert result is None, f"Expected None on bad XML, got {result!r}"
+
+
+def test_maven_metadata_version_no_versioning_element():
+    """Returns None when <versioning> element is missing."""
+    with patch(
+        "veripak.checkers.versions._http_get_text",
+        return_value=_METADATA_XML_NO_VERSIONING,
+    ):
+        result = _maven_metadata_version("com.example", "example")
+    assert result is None, (
+        f"Expected None when <versioning> is missing, got {result!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# check_maven — coordinate format and metadata fallback
+# ---------------------------------------------------------------------------
+
+
+def test_check_maven_coordinate_format_uses_metadata():
+    """Input 'org.jsoup:jsoup' should parse coordinates and hit metadata."""
+    with patch(
+        "veripak.checkers.versions._maven_metadata_version",
+        return_value="1.21.1",
+    ) as mock_meta:
+        version, url, notes = check_maven("org.jsoup:jsoup")
+    mock_meta.assert_called_once_with("org.jsoup", "jsoup")
+    assert version == "1.21.1", (
+        f"Expected '1.21.1' for coordinate input, got {version!r}"
+    )
+    assert "maven-metadata.xml" in url, (
+        f"Expected metadata URL, got {url!r}"
+    )
+    assert notes is None
+
+
+def test_check_maven_coordinate_format_falls_back_to_solr():
+    """When metadata XML fails, Solr search is used as fallback."""
+    solr_response = {
+        "response": {
+            "docs": [{"latestVersion": "1.15.4"}],
+        },
+    }
+    with patch(
+        "veripak.checkers.versions._maven_metadata_version",
+        return_value=None,
+    ):
+        with patch(
+            "veripak.checkers.versions._http_get_json",
+            return_value=solr_response,
+        ):
+            version, url, notes = check_maven("org.jsoup:jsoup")
+    assert version == "1.15.4", (
+        f"Expected Solr fallback version '1.15.4', got {version!r}"
+    )
+    assert "solrsearch" in url, (
+        f"Expected Solr URL on fallback, got {url!r}"
+    )
+
+
+def test_check_maven_osv_mapping_uses_metadata():
+    """Bare name with an OSV mapping should also try metadata first."""
+    with patch(
+        "veripak.checkers.versions._maven_metadata_version",
+        return_value="5.0.0",
+    ) as mock_meta:
+        version, url, notes = check_maven("log4j")
+    mock_meta.assert_called_once_with(
+        "org.apache.logging.log4j", "log4j-core",
+    )
+    assert version == "5.0.0"
+
+
+def test_check_maven_coordinate_branch_scoping():
+    """Branch-scoping still works with coordinate input."""
+    with patch(
+        "veripak.checkers.versions._maven_metadata_version",
+        return_value="2.0.0",
+    ):
+        with patch(
+            "veripak.checkers.versions._maven_branch_latest",
+            return_value="1.17.2",
+        ) as mock_branch:
+            version, _, _ = check_maven(
+                "org.jsoup:jsoup",
+                versions_in_use=["1.15.4"],
+            )
+    mock_branch.assert_called_once_with("org.jsoup", "jsoup", 1)
+    assert version == "1.17.2", (
+        f"Expected branch-scoped '1.17.2', got {version!r}"
+    )
+
+
+def test_check_maven_bare_name_no_mapping_uses_solr():
+    """Bare name without OSV mapping falls through to artifact search."""
+    solr_response = {
+        "response": {
+            "docs": [{"latestVersion": "3.2.1"}],
+        },
+    }
+    with patch(
+        "veripak.checkers.versions._http_get_json",
+        return_value=solr_response,
+    ):
+        version, url, notes = check_maven("some-unknown-artifact")
+    assert version == "3.2.1"
+    assert "solrsearch" in url
+
+
+def test_check_maven_prerelease_noted():
+    """Pre-release version from metadata gets a notes string."""
+    with patch(
+        "veripak.checkers.versions._maven_metadata_version",
+        return_value="4.0-M3",
+    ):
+        version, _, notes = check_maven("org.example:lib")
+    assert version == "4.0-M3"
+    assert notes == "pre-release version"

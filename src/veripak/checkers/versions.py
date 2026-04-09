@@ -4,6 +4,7 @@ import json
 import re
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 
 from .. import model_caller, tavily
 
@@ -165,6 +166,48 @@ def _http_get_json(url: str, timeout: int = 15) -> dict | None:
         return None
 
 
+def _http_get_text(url: str, timeout: int = 15) -> str | None:
+    """Fetch URL and return response body as text, or None on error."""
+    try:
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "veripak/0.1"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read().decode("utf-8")
+    except Exception:
+        return None
+
+
+def _maven_metadata_version(
+    group_id: str, artifact_id: str,
+) -> str | None:
+    """Fetch the latest release version from Maven Central metadata XML.
+
+    Queries ``repo1.maven.org/maven2/{group_path}/{artifact_id}/maven-metadata.xml``
+    and returns the ``<release>`` element (preferred) or ``<latest>`` element.
+    Returns None on any failure.
+    """
+    group_path = group_id.replace(".", "/")
+    url = (
+        f"https://repo1.maven.org/maven2/"
+        f"{group_path}/{artifact_id}/maven-metadata.xml"
+    )
+    text = _http_get_text(url)
+    if not text:
+        return None
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError:
+        return None
+    versioning = root.find("versioning")
+    if versioning is None:
+        return None
+    release = versioning.findtext("release")
+    if release:
+        return release
+    return versioning.findtext("latest")
+
+
 # ---------------------------------------------------------------------------
 # Per-ecosystem version checkers
 # ---------------------------------------------------------------------------
@@ -237,32 +280,64 @@ def check_maven(name: str, versions_in_use: list[str] | None = None) -> tuple[st
     """
     from .cves import _JAVA_OSV_NAMES
 
-    # Try precise groupId:artifactId lookup from the coordinate mapping first
-    mapped = _JAVA_OSV_NAMES.get(name.lower())
-    if mapped and ":" in mapped:
-        g, a = mapped.split(":", 1)
-        url = f"https://search.maven.org/solrsearch/select?q=g:{g}+AND+a:{a}&rows=1&wt=json"
-        data = _http_get_json(url)
-        if data:
-            docs = data.get("response", {}).get("docs", [])
-            if docs:
-                version = docs[0].get("latestVersion")
-                if version:
-                    # Branch-scope: if user is on a different major line,
-                    # find the latest version in their branch instead.
-                    if versions_in_use:
-                        user_parts = _version_tuple(versions_in_use[0])
-                        result_parts = _version_tuple(version)
-                        if (user_parts and result_parts
-                                and user_parts[0] != result_parts[0]):
-                            branch_ver = _maven_branch_latest(g, a, user_parts[0])
-                            if branch_ver:
-                                version = branch_ver
-                    notes = "pre-release version" if is_prerelease(version) else None
-                    return version, url, notes
+    g: str | None = None
+    a: str | None = None
 
-    # Fall back to artifact-name search
-    url = f"https://search.maven.org/solrsearch/select?q=a:{name}&rows=1&wt=json"
+    # 1. If the input is already in coordinate format (groupId:artifactId),
+    #    parse it directly instead of going through the OSV names mapping.
+    if ":" in name:
+        g, a = name.split(":", 1)
+    else:
+        mapped = _JAVA_OSV_NAMES.get(name.lower())
+        if mapped and ":" in mapped:
+            g, a = mapped.split(":", 1)
+
+    # 2. When we have coordinates, try maven-metadata.xml first (canonical
+    #    source), then fall back to the Solr search endpoint.
+    if g and a:
+        metadata_url = (
+            f"https://repo1.maven.org/maven2/"
+            f"{g.replace('.', '/')}/{a}/maven-metadata.xml"
+        )
+        version = _maven_metadata_version(g, a)
+
+        # Fall back to Solr if metadata lookup failed
+        if not version:
+            solr_url = (
+                f"https://search.maven.org/solrsearch/select"
+                f"?q=g:{g}+AND+a:{a}&rows=1&wt=json"
+            )
+            data = _http_get_json(solr_url)
+            if data:
+                docs = data.get("response", {}).get("docs", [])
+                if docs:
+                    version = docs[0].get("latestVersion")
+            metadata_url = solr_url  # report the URL that was actually used
+
+        if version:
+            # Branch-scope: if user is on a different major line,
+            # find the latest version in their branch instead.
+            if versions_in_use:
+                user_parts = _version_tuple(versions_in_use[0])
+                result_parts = _version_tuple(version)
+                if (user_parts and result_parts
+                        and user_parts[0] != result_parts[0]):
+                    branch_ver = _maven_branch_latest(
+                        g, a, user_parts[0],
+                    )
+                    if branch_ver:
+                        version = branch_ver
+            notes = (
+                "pre-release version" if is_prerelease(version)
+                else None
+            )
+            return version, metadata_url, notes
+
+    # 3. No coordinates — fall back to artifact-name search via Solr.
+    url = (
+        f"https://search.maven.org/solrsearch/select"
+        f"?q=a:{name}&rows=1&wt=json"
+    )
     data = _http_get_json(url)
     version = None
     if data:
@@ -271,14 +346,20 @@ def check_maven(name: str, versions_in_use: list[str] | None = None) -> tuple[st
             version = docs[0].get("latestVersion")
 
     if not version:
-        url = f"https://search.maven.org/solrsearch/select?q={name}&rows=1&wt=json"
+        url = (
+            f"https://search.maven.org/solrsearch/select"
+            f"?q={name}&rows=1&wt=json"
+        )
         data = _http_get_json(url)
         if data:
             docs = data.get("response", {}).get("docs", [])
             if docs:
                 version = docs[0].get("latestVersion")
 
-    notes = "pre-release version" if version and is_prerelease(version) else None
+    notes = (
+        "pre-release version" if version and is_prerelease(version)
+        else None
+    )
     return version, url, notes
 
 
