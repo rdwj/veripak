@@ -21,6 +21,7 @@ from veripak.checkers.eol import (
     _is_eol,
     _normalize_candidates,
     check_eol,
+    check_eol_heuristic,
 )
 from veripak.checkers.versions import (
     _maven_metadata_version,
@@ -999,3 +1000,150 @@ def test_check_maven_prerelease_noted():
         version, _, notes = check_maven("org.example:lib")
     assert version == "4.0-M3"
     assert notes == "pre-release version"
+
+
+# ---------------------------------------------------------------------------
+# eol.check_eol_heuristic
+# ---------------------------------------------------------------------------
+
+
+def _make_pypi_response(upload_time_iso: str, version: str = "2.0.0"):
+    """Build a fake PyPI JSON API response with one release file."""
+    return _json.dumps({
+        "info": {"version": version},
+        "releases": {
+            version: [{"upload_time_iso_8601": upload_time_iso}],
+        },
+    }).encode()
+
+
+def _make_npm_response(modified_time: str, latest_version: str = "3.0.0"):
+    """Build a fake npm registry response."""
+    return _json.dumps({
+        "dist-tags": {"latest": latest_version},
+        "time": {
+            latest_version: modified_time,
+            "modified": modified_time,
+        },
+    }).encode()
+
+
+def _urlopen_factory(payload_bytes: bytes):
+    """Return a mock suitable for urllib.request.urlopen context manager."""
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = payload_bytes
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    return mock_resp
+
+
+def test_eol_heuristic_pypi_active():
+    """PyPI package released 30 days ago -> active, medium confidence."""
+    import datetime
+    recent = (
+        datetime.datetime.now(datetime.timezone.utc)
+        - datetime.timedelta(days=30)
+    ).isoformat()
+    payload = _make_pypi_response(recent)
+
+    with patch(
+        "urllib.request.urlopen",
+        return_value=_urlopen_factory(payload),
+    ):
+        result = check_eol_heuristic("requests", "python")
+
+    assert result["eol"] is False, f"Expected eol=False, got {result}"
+    assert result["project_status"] == "active"
+    assert result["confidence"] == "medium"
+    assert result["method"] == "release_date_heuristic"
+    assert result["last_release_date"] is not None
+    assert result["last_release_age_days"] < 365
+
+
+def test_eol_heuristic_pypi_maintenance():
+    """PyPI package released 2 years ago -> maintenance, low confidence."""
+    import datetime
+    old = (
+        datetime.datetime.now(datetime.timezone.utc)
+        - datetime.timedelta(days=730)
+    ).isoformat()
+    payload = _make_pypi_response(old)
+
+    with patch(
+        "urllib.request.urlopen",
+        return_value=_urlopen_factory(payload),
+    ):
+        result = check_eol_heuristic("old-lib", "python")
+
+    assert result["eol"] is None, (
+        f"Expected eol=None for maintenance, got {result}"
+    )
+    assert result["project_status"] == "maintenance"
+    assert result["confidence"] == "low"
+    assert "HITL" in result["notes"]
+
+
+def test_eol_heuristic_pypi_possibly_eol():
+    """PyPI package released 4 years ago -> possibly_eol, eol=True."""
+    import datetime
+    very_old = (
+        datetime.datetime.now(datetime.timezone.utc)
+        - datetime.timedelta(days=1460)
+    ).isoformat()
+    payload = _make_pypi_response(very_old)
+
+    with patch(
+        "urllib.request.urlopen",
+        return_value=_urlopen_factory(payload),
+    ):
+        result = check_eol_heuristic("abandoned-pkg", "python")
+
+    assert result["eol"] is True, (
+        f"Expected eol=True for 4-year-old package, got {result}"
+    )
+    assert result["project_status"] == "possibly_eol"
+    assert result["confidence"] == "low"
+    assert result["last_release_age_days"] >= 1095
+
+
+def test_eol_heuristic_npm():
+    """npm registry last modified date is parsed correctly."""
+    import datetime
+    recent = (
+        datetime.datetime.now(datetime.timezone.utc)
+        - datetime.timedelta(days=10)
+    ).isoformat()
+    payload = _make_npm_response(recent)
+
+    with patch(
+        "urllib.request.urlopen",
+        return_value=_urlopen_factory(payload),
+    ):
+        result = check_eol_heuristic("express", "javascript")
+
+    assert result["project_status"] == "active"
+    assert result["confidence"] == "medium"
+    assert result["last_release_date"] is not None
+
+
+def test_eol_heuristic_unsupported_ecosystem():
+    """Unsupported ecosystem returns notes explaining the limitation."""
+    result = check_eol_heuristic("some-lib", "rust")
+
+    assert result["eol"] is None
+    assert result["last_release_date"] is None
+    assert "not supported" in result["notes"]
+    assert result["method"] == "release_date_heuristic"
+
+
+def test_eol_heuristic_api_failure():
+    """HTTP error from registry returns graceful fallback."""
+    with patch(
+        "urllib.request.urlopen",
+        side_effect=Exception("connection refused"),
+    ):
+        result = check_eol_heuristic("requests", "python")
+
+    assert result["eol"] is None
+    assert result["last_release_date"] is None
+    assert "Could not retrieve" in result["notes"]

@@ -274,11 +274,65 @@ class PackageCheckAgent:
             "replacement_package": answer.get("replacement_package"),
         }
 
+        # Enrich with release-date heuristic when agent returned
+        # low confidence with unknown status
+        if (
+            answer.get("confidence") == "low"
+            and answer.get("project_status") == "unknown"
+        ):
+            try:
+                from .checkers.eol import check_eol_heuristic
+                heuristic = check_eol_heuristic(
+                    state.package, state.ecosystem,
+                    version=(
+                        state.versions_in_use[0]
+                        if state.versions_in_use else None
+                    ),
+                )
+                if heuristic.get("last_release_date") is not None:
+                    # Merge heuristic fields without overwriting
+                    # agent-provided values
+                    state.eol_result.setdefault(
+                        "project_status", None,
+                    )
+                    if state.eol_result["project_status"] in (
+                        None, "unknown",
+                    ):
+                        state.eol_result["project_status"] = (
+                            heuristic["project_status"]
+                        )
+                    state.eol_result["last_release_date"] = (
+                        heuristic["last_release_date"]
+                    )
+                    state.eol_result["last_release_age_days"] = (
+                        heuristic["last_release_age_days"]
+                    )
+                    state.eol_result["method"] = (
+                        "eol_agent+release_date_heuristic"
+                    )
+                    # Upgrade confidence if heuristic is stronger
+                    if (
+                        heuristic.get("confidence") == "medium"
+                        and state.eol_result.get("confidence")
+                        == "low"
+                    ):
+                        state.eol_result["confidence"] = "medium"
+                    # Sync eol field with heuristic project_status
+                    if state.eol_result.get("eol") is None:
+                        h_status = heuristic.get("project_status")
+                        if h_status == "active":
+                            state.eol_result["eol"] = False
+                        elif h_status == "possibly_eol":
+                            state.eol_result["eol"] = True
+            except Exception as exc:
+                state.errors.append(f"eol_heuristic: {exc}")
+
         if agent_result.error:
             state.errors.append(f"eol_agent: {agent_result.error}")
 
     def _track_b_eol_deterministic(self, state: AgentState) -> None:
-        """Track B (deterministic): EOL check via endoflife.date API only."""
+        """Track B (deterministic): EOL check via endoflife.date API,
+        with release-date heuristic fallback."""
         from .checkers import eol
 
         try:
@@ -289,6 +343,24 @@ class PackageCheckAgent:
                 "eol": None, "eol_date": None, "cycle": None,
                 "latest_in_cycle": None, "product": None,
             }
+
+        # Fallback: if endoflife.date had no data, try the heuristic
+        if result.get("eol") is None and result.get("product") is None:
+            try:
+                version = (
+                    state.versions_in_use[0]
+                    if state.versions_in_use else None
+                )
+                heuristic = eol.check_eol_heuristic(
+                    state.package, state.ecosystem, version=version,
+                )
+                if heuristic.get("last_release_date") is not None:
+                    result = heuristic
+            except Exception as exc:
+                state.errors.append(
+                    f"eol_heuristic: {exc}"
+                )
+
         state.eol_result = result
 
     # ------------------------------------------------------------------

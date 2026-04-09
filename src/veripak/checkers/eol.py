@@ -495,6 +495,225 @@ def _check_version_gap_eol(version_in_use: str, latest_version: str) -> dict | N
     return None
 
 
+# ------------------------------------------------------------------
+# Release-date heuristic for EOL detection
+# ------------------------------------------------------------------
+
+# Ecosystems that have registry APIs we can query for release dates.
+_HEURISTIC_ECOSYSTEMS = {"python", "javascript", "java", "go"}
+
+# Age thresholds (days)
+_ACTIVE_THRESHOLD = 365        # < 1 year
+_MAINTENANCE_THRESHOLD = 1095  # 1-3 years (3 * 365)
+
+
+def _fetch_last_release_date_pypi(name: str) -> str | None:
+    """Return ISO date string of the latest PyPI release, or None."""
+    url = f"https://pypi.org/pypi/{name}/json"
+    try:
+        req = urllib.request.Request(url, headers=_HEADERS)
+        with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
+            data = json.loads(resp.read().decode())
+    except Exception:
+        return None
+
+    version = data.get("info", {}).get("version")
+    if not version:
+        return None
+
+    releases = data.get("releases", {})
+    version_files = releases.get(version, [])
+    if not version_files:
+        return None
+
+    upload_time = version_files[0].get("upload_time_iso_8601")
+    if not upload_time:
+        upload_time = version_files[0].get("upload_time")
+    return upload_time
+
+
+def _fetch_last_release_date_npm(name: str) -> str | None:
+    """Return ISO date string of the latest npm release, or None."""
+    import urllib.parse
+    encoded = urllib.parse.quote(name, safe="@/")
+    url = f"https://registry.npmjs.org/{encoded}"
+    try:
+        req = urllib.request.Request(url, headers=_HEADERS)
+        with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
+            data = json.loads(resp.read().decode())
+    except Exception:
+        return None
+
+    time_map = data.get("time", {})
+    # Prefer the date of the latest dist-tag
+    latest_tag = data.get("dist-tags", {}).get("latest", "")
+    if latest_tag and latest_tag in time_map:
+        return time_map[latest_tag]
+    # Fall back to the "modified" timestamp
+    return time_map.get("modified")
+
+
+def _fetch_last_release_date_maven(name: str) -> str | None:
+    """Return ISO date string of the latest Maven release, or None.
+
+    Maven's Solr search returns a timestamp in epoch milliseconds.
+    """
+    url = (
+        "https://search.maven.org/solrsearch/select"
+        f"?q=a:{name}&rows=1&wt=json"
+    )
+    try:
+        req = urllib.request.Request(url, headers=_HEADERS)
+        with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
+            data = json.loads(resp.read().decode())
+    except Exception:
+        return None
+
+    docs = data.get("response", {}).get("docs", [])
+    if not docs:
+        return None
+
+    ts = docs[0].get("timestamp")
+    if ts is None:
+        return None
+
+    dt = datetime.datetime.fromtimestamp(ts / 1000, tz=datetime.timezone.utc)
+    return dt.isoformat()
+
+
+def _fetch_last_release_date_go(module: str) -> str | None:
+    """Return ISO date string of the latest Go module release, or None."""
+    encoded = module.replace("/", "%2F")
+    url = f"https://proxy.golang.org/{encoded}/@latest"
+    try:
+        req = urllib.request.Request(url, headers=_HEADERS)
+        with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
+            data = json.loads(resp.read().decode())
+    except Exception:
+        return None
+
+    return data.get("Time")
+
+
+_RELEASE_DATE_FETCHERS: dict[str, object] = {
+    "python": _fetch_last_release_date_pypi,
+    "javascript": _fetch_last_release_date_npm,
+    "java": _fetch_last_release_date_maven,
+    "go": _fetch_last_release_date_go,
+}
+
+
+def check_eol_heuristic(
+    name: str,
+    ecosystem: str,
+    version: str | None = None,
+) -> dict:
+    """Heuristic EOL check based on last release date.
+
+    Queries the package registry for the last release/publish date
+    and applies age thresholds:
+      - < 1 year: active (confidence: medium)
+      - 1-3 years: maintenance (confidence: low)
+      - > 3 years: possibly_eol (confidence: low)
+
+    Returns a dict compatible with the standard EOL result format.
+    """
+    empty: dict = {
+        "eol": None,
+        "eol_date": None,
+        "cycle": None,
+        "latest_in_cycle": None,
+        "product": name,
+        "method": "release_date_heuristic",
+        "last_release_date": None,
+        "last_release_age_days": None,
+        "project_status": None,
+        "confidence": None,
+        "notes": None,
+    }
+
+    fetcher = _RELEASE_DATE_FETCHERS.get(ecosystem)
+    if fetcher is None:
+        return {
+            **empty,
+            "notes": (
+                f"Release-date heuristic not supported for "
+                f"ecosystem '{ecosystem}'"
+            ),
+        }
+
+    raw_date = fetcher(name)
+    if not raw_date:
+        return {
+            **empty,
+            "notes": (
+                f"Could not retrieve last release date from "
+                f"{ecosystem} registry"
+            ),
+        }
+
+    # Parse the date — handle both full ISO 8601 and date-only formats
+    try:
+        # Strip trailing 'Z' for fromisoformat compatibility (Python < 3.11)
+        cleaned = raw_date.replace("Z", "+00:00")
+        release_dt = datetime.datetime.fromisoformat(cleaned)
+        # Ensure timezone-aware for comparison
+        if release_dt.tzinfo is None:
+            release_dt = release_dt.replace(
+                tzinfo=datetime.timezone.utc,
+            )
+    except (ValueError, TypeError):
+        return {
+            **empty,
+            "notes": f"Could not parse release date: {raw_date!r}",
+        }
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    age_days = (now - release_dt).days
+    release_date_str = release_dt.strftime("%Y-%m-%d")
+
+    if age_days < _ACTIVE_THRESHOLD:
+        project_status = "active"
+        confidence = "medium"
+        eol = False
+        notes = (
+            f"Last release {release_date_str} ({age_days} days ago). "
+            f"Package appears actively maintained."
+        )
+    elif age_days < _MAINTENANCE_THRESHOLD:
+        project_status = "maintenance"
+        confidence = "low"
+        eol = None
+        notes = (
+            f"Last release {release_date_str} ({age_days} days ago). "
+            f"No release in over a year; may be in maintenance mode. "
+            f"HITL: verify project status."
+        )
+    else:
+        project_status = "possibly_eol"
+        confidence = "low"
+        eol = True
+        notes = (
+            f"Last release {release_date_str} ({age_days} days ago). "
+            f"No release in over 3 years; project may be abandoned. "
+            f"HITL: verify project status."
+        )
+
+    return {
+        "eol": eol,
+        "eol_date": None,
+        "cycle": None,
+        "latest_in_cycle": None,
+        "product": name,
+        "method": "release_date_heuristic",
+        "last_release_date": release_date_str,
+        "last_release_age_days": age_days,
+        "project_status": project_status,
+        "confidence": confidence,
+        "notes": notes,
+    }
+
+
 def _check_tavily_eol(
     name: str,
     ecosystem: str,
