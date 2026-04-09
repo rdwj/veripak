@@ -92,6 +92,7 @@ def cmd_config() -> None:
 @click.option("--no-cves", is_flag=True, help="Skip CVE check")
 @click.option("--no-download", is_flag=True, help="Skip download validation")
 @click.option("--no-summary", is_flag=True, help="Skip AI security summary")
+@click.option("--verbose", "-v", is_flag=True, help="Show agent debug info and token usage")
 def cmd_check(
     package: str,
     ecosystem: str,
@@ -105,6 +106,7 @@ def cmd_check(
     no_cves: bool,
     no_download: bool,
     no_summary: bool,
+    verbose: bool,
 ) -> None:
     """Audit PACKAGE in ECOSYSTEM."""
     if not ecosystem:
@@ -137,6 +139,10 @@ def cmd_check(
         skip_download=no_download,
         skip_summary=no_summary,
     )
+
+    if not verbose:
+        result.pop("_agent", None)
+        result.pop("_usage", None)
 
     if output_json:
         click.echo(json.dumps(result, indent=2))
@@ -231,19 +237,24 @@ def cmd_check(
     else:
         click.echo("  Replacement: n/a")
 
-    agent_errors = agent_meta.get("errors", [])
-    if agent_errors:
-        click.echo("  Errors:")
-        for err in agent_errors:
-            click.echo(f"    {err}")
+    if verbose:
+        agent_errors = agent_meta.get("errors", [])
+        if agent_errors:
+            click.echo("  Errors:")
+            for err in agent_errors:
+                click.echo(f"    {err}")
 
-    usage = result.get("_usage")
-    if usage and usage.get("total_tokens"):
-        prompt_t = usage["prompt_tokens"]
-        comp_t = usage["completion_tokens"]
-        total_t = usage["total_tokens"]
-        cost = usage["estimated_cost_usd"]
-        click.echo(f"  Tokens:      {prompt_t:,} prompt + {comp_t:,} completion = {total_t:,} total (${cost:.4f})")
+        usage = result.get("_usage")
+        if usage and usage.get("total_tokens"):
+            prompt_t = usage["prompt_tokens"]
+            comp_t = usage["completion_tokens"]
+            total_t = usage["total_tokens"]
+            cost = usage["estimated_cost_usd"]
+            click.echo(
+                f"  Tokens:      {prompt_t:,} prompt"
+                f" + {comp_t:,} completion"
+                f" = {total_t:,} total (${cost:.4f})"
+            )
 
     click.echo()
 
