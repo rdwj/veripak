@@ -36,7 +36,7 @@ Tracks A+B and C+D use `ThreadPoolExecutor` for parallelism — no async complex
 src/veripak/
   agent.py             # PackageCheckAgent orchestrator
   cli.py               # Click entry point (veripak / vpk)
-  config.py            # Config file load/save (~/.veripak/config.yaml)
+  config.py            # Config file load/save (~/.config/veripak/config.json)
   model_caller.py      # LLM backend abstraction (openai + anthropic SDKs); tracks token usage
   tavily.py            # Tavily search helper
   version.py           # __version__ constant (must stay in sync with pyproject.toml)
@@ -51,14 +51,15 @@ src/veripak/
     downloads.py       # N3: HTTP HEAD validation
     replacements.py    # N5: replacement package confirmation
     summarize.py       # N6: summary agent (via model_caller)
-    cves.py            # Deterministic CVE fallback (OSV.dev, NVD)
-    eol.py             # Deterministic EOL fallback (endoflife.date)
-    ecosystem.py       # Deterministic ecosystem inference fallback
+    cves.py            # Deterministic CVE fallback (OSV.dev, NVD) + CVE ID validation
+    eol.py             # Deterministic EOL fallback (endoflife.date) + release-date heuristic
+    ecosystem.py       # Deterministic ecosystem inference + ambiguity detection
     migration.py       # Migration complexity helpers
 
 prompts/               # YAML prompt templates for agents
 tests/
   test_checkers.py
+  test_cli_config.py
 ```
 
 ## Development
@@ -124,8 +125,10 @@ Monitor: https://github.com/rdwj/veripak/actions
 Keys are read from: environment variables first, then `.env` in project root, then `~/.zshrc`.
 The `.env` file is gitignored.
 
-LLM backend and model are configured via `veripak config` and stored in `~/.veripak/config.yaml`.
-Supported backends: Ollama (default), Anthropic, OpenAI, vLLM.
+LLM backend and model are configured via `veripak config` (interactive) or
+`veripak config set <key> <value>` (programmatic) and stored in
+`~/.config/veripak/config.json`. Supported backends: Ollama (default), Anthropic,
+OpenAI, vLLM.
 
 ## Ecosystem Coverage
 
@@ -162,3 +165,23 @@ found the real current version, the EOL agent's value wins.
 **HITL flags** — agents emit `HITLFlag` objects when a field needs human review (data source
 inaccessible, signals contradictory, etc.). These propagate through `AgentState.hitl_flags`
 and appear in the result JSON as `hitl_flags`.
+
+**CVE cross-validation** — after the CVE agent returns, `agent.py` calls
+`checkers.cves.validate_cve_ids()` to verify each CVE ID against OSV.dev/NVD. Unverified
+CVEs are dropped (not downgraded) and a HITL flag is emitted. This prevents hallucinated
+CVE IDs from smaller models from reaching the output.
+
+**Maven metadata XML** — `checkers/versions.py` prefers `maven-metadata.xml` from the
+Maven Central repository over the Solr search endpoint for coordinate-format lookups
+(`groupId:artifactId`). The search endpoint can return stale `latestVersion` data.
+
+**Ecosystem ambiguity** — `checkers/ecosystem.py` has `detect_ecosystem_ambiguity()` that
+probes all registries. The CLI refuses to proceed when a package exists in 2+ ecosystems
+without an explicit `--ecosystem` flag.
+
+**EOL release-date heuristic** — `checkers/eol.py` has `check_eol_heuristic()` as a
+fallback when endoflife.date has no data. Uses last release date from PyPI/npm/Maven/Go
+with thresholds: <1y active, 1-3y maintenance, >3y possibly_eol.
+
+**Verbose flag** — debug fields (`_agent`, `_usage`) are filtered at the CLI layer, not
+in the pipeline. The MCP server has its own filtering. The pipeline always computes them.

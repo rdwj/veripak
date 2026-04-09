@@ -158,10 +158,19 @@ Both `TAVILY_API_KEY` and `NVD_API_KEY` are included in the examples above. See 
 
 Both `veripak` and `vpk` work as entry points. Check the installed version with `veripak --version`.
 
-Configure your LLM backend and API keys:
+Configure your LLM backend and API keys interactively:
 
 ```bash
 veripak config
+```
+
+Or set individual values programmatically:
+
+```bash
+veripak config set llm_backend anthropic
+veripak config set anthropic_api_key sk-ant-...
+veripak config get llm_backend
+veripak config list
 ```
 
 Run an audit:
@@ -202,7 +211,9 @@ vpk check lodash --ecosystem javascript --no-download
 veripak check nose --ecosystem python --replacement pytest
 ```
 
-Additional flags: `--release-notes-url`, `--repository-url`, `--homepage`, `--download-url` (supply known URLs to skip discovery), and `--no-summary` (skip AI security summary). Run `veripak check --help` for the full list.
+Additional flags: `--verbose` (show agent debug info and token usage), `--release-notes-url`, `--repository-url`, `--homepage`, `--download-url` (supply known URLs to skip discovery), and `--no-summary` (skip AI security summary). Run `veripak check --help` for the full list.
+
+Note: if a package name exists in multiple ecosystems (e.g., `jsoup` on both PyPI and Maven), veripak will ask you to specify `--ecosystem` rather than guessing.
 
 ## API keys
 
@@ -347,6 +358,15 @@ python -m build
 Line length limit: 100 (ruff). Rule sets: E, W, F, I, B, C4, UP.
 
 ## Changelog
+
+### 0.5.0
+
+- **CVE cross-validation**: LLM-sourced CVE IDs are now verified against OSV.dev and NVD before inclusion in results; unverified CVEs are dropped with a HITL flag
+- **Maven coordinate support**: `groupId:artifactId` format (e.g., `org.jsoup:jsoup`) now resolves correctly via Maven metadata XML instead of the stale Solr search endpoint
+- **Ecosystem ambiguity detection**: when a package name exists in multiple registries (e.g., `jsoup` on both PyPI and Maven), veripak requires `--ecosystem` instead of silently picking one
+- **EOL release-date heuristic**: when endoflife.date has no data, veripak falls back to last-release-date analysis (active / maintenance / possibly EOL) for PyPI, npm, Maven, and Go packages
+- **Non-interactive config**: `veripak config set <key> <value>`, `veripak config get <key>`, and `veripak config list` for programmatic configuration
+- **Verbose flag**: `--verbose / -v` controls visibility of agent debug info and token usage; these fields are now hidden by default in both human-readable and JSON output
 
 ### 0.4.1
 
