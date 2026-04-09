@@ -17,19 +17,32 @@ def _echo_check(label: str, value: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Commands
+# Config helpers
 # ---------------------------------------------------------------------------
 
+_VALID_KEYS = {
+    "llm_backend", "llm_model", "llm_base_url",
+    "tavily_api_key", "nvd_api_key", "anthropic_api_key",
+    "openai_api_key",
+}
 
-@click.group()
-@click.version_option(version=__version__, prog_name="veripak")
-def main() -> None:
-    """veripak — open-source package auditor."""
+_VALID_BACKENDS = {"ollama", "anthropic", "openai", "vllm"}
+
+_API_KEY_FIELDS = {
+    "tavily_api_key", "nvd_api_key", "anthropic_api_key",
+    "openai_api_key",
+}
 
 
-@main.command("config")
-def cmd_config() -> None:
-    """Interactive setup wizard."""
+def _mask_value(key: str, value: str) -> str:
+    """Mask API key values for display."""
+    if key in _API_KEY_FIELDS and value:
+        return value[:4] + "..." if len(value) > 4 else "****"
+    return value
+
+
+def _interactive_config() -> None:
+    """Run the interactive configuration wizard."""
     cfg = config.load_config()
 
     backend = click.prompt(
@@ -73,6 +86,67 @@ def cmd_config() -> None:
 
     config.save_config(new_cfg)
     click.echo(f"Config saved to {config.config_path()}")
+
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+
+
+@click.group()
+@click.version_option(version=__version__, prog_name="veripak")
+def main() -> None:
+    """veripak — open-source package auditor."""
+
+
+@main.group("config", invoke_without_command=True)
+@click.pass_context
+def cmd_config(ctx) -> None:
+    """Configure veripak settings."""
+    if ctx.invoked_subcommand is None:
+        _interactive_config()
+
+
+@cmd_config.command("set")
+@click.argument("key")
+@click.argument("value")
+def cmd_config_set(key: str, value: str) -> None:
+    """Set a configuration value."""
+    if key not in _VALID_KEYS:
+        raise click.UsageError(
+            f"Unknown key {key!r}. "
+            f"Valid keys: {', '.join(sorted(_VALID_KEYS))}"
+        )
+    if key == "llm_backend" and value not in _VALID_BACKENDS:
+        raise click.UsageError(
+            f"Invalid backend {value!r}. "
+            f"Must be one of: {', '.join(sorted(_VALID_BACKENDS))}"
+        )
+    cfg = config.load_config()
+    cfg[key] = value
+    config.save_config(cfg)
+    click.echo(f"Set {key} = {_mask_value(key, value)}")
+
+
+@cmd_config.command("get")
+@click.argument("key")
+def cmd_config_get(key: str) -> None:
+    """Get a configuration value."""
+    cfg = config.load_config()
+    if key not in cfg:
+        raise SystemExit(f"Key {key!r} not found in config.")
+    click.echo(_mask_value(key, cfg[key]))
+
+
+@cmd_config.command("list")
+def cmd_config_list() -> None:
+    """List all configuration values."""
+    cfg = config.load_config()
+    if not cfg:
+        click.echo("No configuration values set.")
+        return
+    for key in sorted(cfg):
+        click.echo(f"{key} = {_mask_value(key, cfg[key])}")
 
 
 @main.command("check")
