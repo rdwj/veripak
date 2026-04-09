@@ -188,7 +188,6 @@ def cmd_check(
             detect_ecosystem_ambiguity,
             infer_ecosystem,
         )
-
         version_hint = (
             version_list.split(",")[0].strip()
             if version_list.strip() else None
@@ -206,7 +205,7 @@ def cmd_check(
         if len(matches) == 1:
             ecosystem = matches[0]
         else:
-            # No registry matches -- try model-based inference.
+            # No registry matches — try model-based inference.
             inferred = infer_ecosystem(package, version=version_hint)
             if not inferred:
                 raise click.UsageError(
@@ -234,11 +233,10 @@ def cmd_check(
         skip_summary=no_summary,
     )
 
-    if not verbose:
-        result.pop("_agent", None)
-        result.pop("_usage", None)
-
     if output_json:
+        if not verbose:
+            result.pop("_agent", None)
+            result.pop("_usage", None)
         click.echo(json.dumps(result, indent=2))
         return
 

@@ -10,6 +10,7 @@ from veripak.checkers.cves import (
     _nvd_fetch_by_cpe_name,
     _suggest_nvd_cpe,
     _version_in_cpe_range,
+    validate_cve_ids,
 )
 from veripak.checkers.download_discovery import (
     _extract_tarballs_from_html,
@@ -789,7 +790,7 @@ def test_detect_ecosystem_ambiguity_exception_tolerant():
 
 
 def test_detect_ecosystem_ambiguity_skips_overrides():
-    """Packages in the override map return empty -- no probing needed."""
+    """Packages in the override map return empty — no probing needed."""
     result = detect_ecosystem_ambiguity("grafana")
     assert result == [], (
         f"Expected [] for overridden package, got {result}"
@@ -1000,6 +1001,141 @@ def test_check_maven_prerelease_noted():
         version, _, notes = check_maven("org.example:lib")
     assert version == "4.0-M3"
     assert notes == "pre-release version"
+
+
+# ---------------------------------------------------------------------------
+# validate_cve_ids
+# ---------------------------------------------------------------------------
+
+
+def test_validate_cve_ids_osv_confirms():
+    """CVEs returned by OSV for the package are marked True."""
+    osv_vulns = [
+        {"id": "CVE-2024-1234", "severity": "HIGH",
+         "summary": "XSS in jsoup", "aliases": ["GHSA-abc"]},
+        {"id": "CVE-2023-5678", "severity": "MEDIUM",
+         "summary": "DoS in jsoup", "aliases": []},
+    ]
+    with patch(
+        "veripak.checkers.cves._osv_query_package",
+        return_value=osv_vulns,
+    ):
+        result = validate_cve_ids(
+            ["CVE-2024-1234", "CVE-2023-5678"],
+            "jsoup", "java",
+        )
+    assert result == {
+        "CVE-2024-1234": True,
+        "CVE-2023-5678": True,
+    }, f"All OSV-confirmed CVEs should be True, got {result}"
+
+
+def test_validate_cve_ids_osv_rejects():
+    """CVE not in OSV and not in NVD is marked False."""
+    osv_vulns = [
+        {"id": "CVE-2024-1234", "severity": "HIGH",
+         "summary": "Real vuln", "aliases": []},
+    ]
+    with patch(
+        "veripak.checkers.cves._osv_query_package",
+        return_value=osv_vulns,
+    ):
+        with patch(
+            "veripak.checkers.cves._nvd_fetch_by_id",
+            return_value=None,
+        ):
+            result = validate_cve_ids(
+                ["CVE-2024-1234", "CVE-2015-3117"],
+                "jsoup", "java",
+            )
+    assert result["CVE-2024-1234"] is True, (
+        "OSV-confirmed CVE should be True"
+    )
+    assert result["CVE-2015-3117"] is False, (
+        "CVE not found in OSV or NVD should be False"
+    )
+
+
+def test_validate_cve_ids_nvd_fallback():
+    """CVE missed by OSV but confirmed by NVD CPE match is True."""
+    nvd_item = {
+        "cve": {
+            "id": "CVE-2023-9999",
+            "configurations": [{
+                "nodes": [{
+                    "cpeMatch": [{
+                        "vulnerable": True,
+                        "criteria": "cpe:2.3:a:jsoup:jsoup:1.15.3:*:*:*:*:*:*:*",
+                    }],
+                }],
+            }],
+        },
+    }
+    with patch(
+        "veripak.checkers.cves._osv_query_package",
+        return_value=[],
+    ):
+        with patch(
+            "veripak.checkers.cves._nvd_fetch_by_id",
+            return_value=nvd_item,
+        ):
+            result = validate_cve_ids(
+                ["CVE-2023-9999"], "jsoup", "java",
+            )
+    assert result["CVE-2023-9999"] is True, (
+        "NVD-confirmed CVE should be True"
+    )
+
+
+def test_validate_cve_ids_fault_tolerant():
+    """When OSV raises an exception, all CVEs default to True."""
+    with patch(
+        "veripak.checkers.cves._osv_query_package",
+        side_effect=OSError("connection refused"),
+    ):
+        result = validate_cve_ids(
+            ["CVE-2024-1234", "CVE-2015-3117"],
+            "jsoup", "java",
+        )
+    assert all(v is True for v in result.values()), (
+        f"All CVEs should be True on OSV failure, got {result}"
+    )
+    assert len(result) == 2
+
+
+def test_validate_cve_ids_nvd_only_ecosystem():
+    """For NVD-only ecosystems (c, cpp, etc.), OSV is skipped entirely
+    and validation goes straight to NVD CVE-ID lookup."""
+    fake_nvd_item = {
+        "cve": {
+            "id": "CVE-2023-9999",
+            "configurations": [{
+                "nodes": [{
+                    "cpeMatch": [{
+                        "criteria": "cpe:2.3:a:vendor:openssl:*:*:*:*:*:*:*:*",
+                        "vulnerable": True,
+                    }]
+                }]
+            }],
+        }
+    }
+    with (
+        patch(
+            "veripak.checkers.cves._osv_query_package",
+            side_effect=AssertionError("OSV should not be called"),
+        ),
+        patch(
+            "veripak.checkers.cves._nvd_fetch_by_id",
+            return_value=fake_nvd_item,
+        ) as mock_nvd,
+    ):
+        result = validate_cve_ids(
+            ["CVE-2023-9999"], "openssl", "c",
+        )
+    mock_nvd.assert_called_once()
+    assert result["CVE-2023-9999"] is True, (
+        f"NVD confirmed CVE with matching CPE should be True, got {result}"
+    )
 
 
 # ---------------------------------------------------------------------------

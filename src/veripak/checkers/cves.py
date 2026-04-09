@@ -352,6 +352,31 @@ def _nvd_fetch_by_cpe_name(cpe_name: str, api_key: str) -> list[dict]:
     return []
 
 
+def _nvd_fetch_by_id(cve_id: str, api_key: str) -> dict | None:
+    """Fetch a single CVE record from NVD by its CVE ID.
+
+    Returns the full vulnerability item dict, or None on failure.
+    """
+    url = f"{_NVD_BASE}?cveId={urllib.parse.quote(cve_id)}"
+    extra = {"apiKey": api_key} if api_key else {}
+    for attempt in range(_NVD_MAX_RETRIES):
+        _nvd_rate_limit(api_key)
+        req = urllib.request.Request(url, headers={**_HEADERS, **extra})
+        try:
+            with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
+                data = _parse_body(resp.read()) or {}
+                vulns = data.get("vulnerabilities", [])
+                return vulns[0] if vulns else None
+        except urllib.error.HTTPError as exc:
+            if exc.code in (403, 503):
+                time.sleep(2 ** (attempt + 1))
+            else:
+                break
+        except Exception:
+            break
+    return None
+
+
 # ---------------------------------------------------------------------------
 # CPE version range filtering
 # ---------------------------------------------------------------------------
@@ -688,6 +713,77 @@ def _discover_security_advisory_cves(name: str, versions: list[str]) -> list[dic
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+
+def validate_cve_ids(
+    cve_ids: list[str],
+    package: str,
+    ecosystem: str,
+) -> dict[str, bool]:
+    """Cross-validate CVE IDs against OSV.dev and NVD.
+
+    Returns a dict mapping each CVE ID to True (confirmed for this package)
+    or False (not found / does not reference this package).
+
+    Fault-tolerant: if OSV or NVD queries fail, unvalidated CVEs are
+    mapped to True (safe default — don't drop what we can't disprove).
+    """
+    if not cve_ids:
+        return {}
+
+    result: dict[str, bool] = {}
+
+    # Step 1: Query OSV for all known CVEs on this package.
+    # Build a set of confirmed IDs including aliases.
+    osv_confirmed: set[str] = set()
+    try:
+        osv_eco = OSV_ECOSYSTEM_MAP.get(ecosystem)
+        if osv_eco:
+            osv_name = package
+            if ecosystem == "java":
+                osv_name = _JAVA_OSV_NAMES.get(
+                    package.lower(), package
+                )
+            elif ecosystem == "javascript":
+                osv_name = _JS_OSV_NAMES.get(
+                    package.lower(), package
+                )
+            for entry in _osv_query_package(osv_name, osv_eco):
+                osv_confirmed.add(entry["id"])
+                for alias in entry.get("aliases", []):
+                    osv_confirmed.add(alias)
+    except Exception:
+        # OSV failed — mark all as True (safe default)
+        return dict.fromkeys(cve_ids, True)
+
+    # Step 2: Classify each CVE ID
+    unconfirmed: list[str] = []
+    for cve_id in cve_ids:
+        if cve_id in osv_confirmed:
+            result[cve_id] = True
+        else:
+            unconfirmed.append(cve_id)
+
+    if not unconfirmed:
+        return result
+
+    # Step 3: For unconfirmed IDs, try NVD by CVE ID and check CPE
+    api_key = config.get("nvd_api_key") or ""
+    for cve_id in unconfirmed:
+        try:
+            item = _nvd_fetch_by_id(cve_id, api_key)
+            if item is None:
+                # NVD didn't return this CVE — can't confirm
+                result[cve_id] = False
+                continue
+            result[cve_id] = _cpe_matches_package(
+                item, package, ecosystem
+            )
+        except Exception:
+            # NVD query failed — safe default
+            result[cve_id] = True
+
+    return result
 
 
 def check_cves(

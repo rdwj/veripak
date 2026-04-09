@@ -443,6 +443,63 @@ class PackageCheckAgent:
         if agent_result.error:
             state.errors.append(f"cve_agent: {agent_result.error}")
 
+        # Cross-validate agent-sourced CVE IDs against OSV.dev/NVD.
+        # NOTE: Only validates versions_cves (the agent's primary list).
+        # latest_cves and replacement_cves are always empty from the agent;
+        # if that changes, extend validation to cover those lists too.
+        from .checkers.cves import validate_cve_ids
+
+        cve_ids = [
+            c.get("id", "") for c in cves_list if c.get("id")
+        ]
+        if cve_ids:
+            validation = validate_cve_ids(
+                cve_ids, state.package, state.ecosystem,
+            )
+            validated_cves = []
+            dropped_cves = []
+            for cve in cves_list:
+                cve_id = cve.get("id", "")
+                if validation.get(cve_id, True):
+                    cve["validated"] = True
+                    validated_cves.append(cve)
+                else:
+                    cve["validated"] = False
+                    dropped_cves.append(cve)
+
+            if dropped_cves:
+                dropped_ids = [c["id"] for c in dropped_cves]
+                state.hitl_flags.append(HITLFlag(
+                    field_name="cves",
+                    agent="cve_agent",
+                    reason=(
+                        f"Dropped {len(dropped_cves)} unverified "
+                        f"CVE(s): {', '.join(dropped_ids)}. "
+                        f"These CVE IDs could not be confirmed "
+                        f"against OSV.dev/NVD for package "
+                        f"'{state.package}'."
+                    ),
+                    blocked_url=None,
+                ))
+                state.errors.append(
+                    f"cve_agent: dropped "
+                    f"{len(dropped_cves)} unverified CVE(s): "
+                    f"{', '.join(dropped_ids)}"
+                )
+
+            state.cve_result["versions_cves"] = validated_cves
+            high_critical = sum(
+                1 for c in validated_cves
+                if c.get("severity", "").upper()
+                in ("HIGH", "CRITICAL")
+            )
+            state.cve_result["total_count"] = len(
+                validated_cves
+            )
+            state.cve_result["high_critical_count"] = (
+                high_critical
+            )
+
     def _track_d_cves_deterministic(self, state: AgentState) -> None:
         """Track D (deterministic): CVE check via OSV.dev/NVD only."""
         from .checkers import cves
