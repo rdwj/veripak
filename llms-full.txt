@@ -1,0 +1,1448 @@
+# veripak — Full Documentation Bundle
+
+veripak is a CLI tool and MCP server for auditing open-source package health:
+version staleness, EOL status, CVE exposure, download validation, and
+replacement checking. It uses a parallel agent-based pipeline where LLM agents
+handle non-deterministic lookups and deterministic checkers query package
+registries directly.
+
+This bundle contains the curated set of reference documents most useful for an
+LLM agent helping users with this project. It complements `llms.txt` (the
+navigation index at the repo root) by inlining content rather than linking to
+it, so an LLM agent can understand the project in a single fetch.
+
+---
+
+## `README.md`
+
+# veripak
+
+Audit open-source package health: version staleness, EOL status, CVE exposure, download validation, and replacement checking.
+
+## Install
+
+```bash
+pip install veripak
+
+# With MCP server support (for AI coding assistants)
+pip install veripak[mcp]
+```
+
+Requires Python 3.10+.
+
+## Using with AI agents
+
+veripak integrates with AI coding assistants and agents through two paths: an MCP server for tool-calling agents, and JSON CLI output for agents with shell access.
+
+### MCP server
+
+`veripak serve` runs veripak as an MCP server over stdio transport. It operates in **deterministic-only mode** -- querying authoritative sources directly (PyPI, npm, Maven Central, OSV.dev, NVD, endoflife.date) without making any LLM calls. The calling agent's own LLM reasons over the raw data. This is faster and avoids redundant LLM costs.
+
+The server exposes a single tool, `veripak_check_package`, with these parameters:
+
+| Parameter | Required | Description |
+|---|---|---|
+| `package` | Yes | Package name (e.g. `requests`, `lodash`, `log4j`) |
+| `ecosystem` | No | Package ecosystem -- inferred automatically if omitted |
+| `versions_in_use` | No | List of deployed versions for CVE matching |
+| `replacement` | No | Replacement package name to validate |
+| `skip_cves` | No | Skip the CVE vulnerability check |
+| `skip_download` | No | Skip download URL validation |
+
+The response includes a `data_gaps` field that tells the calling agent what couldn't be verified and why (missing API keys, package not found in a database, rate limits hit, etc.). This lets the agent adjust its reasoning rather than treating missing data as a clean bill of health.
+
+### CLI with `--json`
+
+Any agent with shell access can call veripak directly -- no MCP setup needed. This works with Pi, Aider, or any tool that can invoke a command and parse JSON output:
+
+```bash
+veripak check requests --ecosystem python --versions 2.28.0 --json
+```
+
+The `--json` path runs the full agent pipeline (including LLM calls), so it requires a configured LLM backend (`veripak config`). In exchange, you get richer analysis: the pipeline reasons about ambiguous signals, writes a security summary, and flags items for human review. The MCP server path gives raw structured data only — faster, cheaper, no LLM backend required.
+
+## MCP setup guides
+
+### Claude Code
+
+Add via CLI:
+
+```bash
+claude mcp add veripak -e TAVILY_API_KEY=tvly-xxx -e NVD_API_KEY=xxx -- veripak serve
+```
+
+Or in your project's `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "veripak": {
+      "command": "veripak",
+      "args": ["serve"],
+      "env": {
+        "TAVILY_API_KEY": "your-key-here",
+        "NVD_API_KEY": "your-key-here"
+      }
+    }
+  }
+}
+```
+
+### Claude Desktop
+
+In Settings > Developer > Edit Config (`claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "veripak": {
+      "command": "veripak",
+      "args": ["serve"],
+      "env": {
+        "TAVILY_API_KEY": "your-key-here",
+        "NVD_API_KEY": "your-key-here"
+      }
+    }
+  }
+}
+```
+
+### Codex (OpenAI)
+
+In `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.veripak]
+command = "veripak"
+args = ["serve"]
+
+[mcp_servers.veripak.env]
+TAVILY_API_KEY = "your-key-here"
+NVD_API_KEY = "your-key-here"
+```
+
+### Continue (VS Code / JetBrains)
+
+In `.continue/config.yaml`:
+
+```yaml
+mcpServers:
+  - name: veripak
+    command: veripak
+    args:
+      - serve
+    env:
+      TAVILY_API_KEY: your-key-here
+      NVD_API_KEY: your-key-here
+```
+
+MCP tools are only available in Continue's Agent mode.
+
+### OpenCode
+
+In `opencode.json`:
+
+```json
+{
+  "mcp": {
+    "veripak": {
+      "type": "local",
+      "command": ["veripak", "serve"],
+      "environment": {
+        "TAVILY_API_KEY": "your-key-here",
+        "NVD_API_KEY": "your-key-here"
+      }
+    }
+  }
+}
+```
+
+### Pi
+
+[Pi](https://github.com/badlogic/pi-mono) does not support MCP by design — its author argues that MCP tool manifests consume too much context. Pi uses "Skills" (CLI tools with README docs) instead. Since veripak is already a CLI tool, Pi can invoke it directly via its bash tool:
+
+```bash
+veripak check requests --ecosystem python --versions 2.28.0 --json
+```
+
+No additional configuration needed. Pi will discover veripak's capabilities from its `--help` output.
+
+The community fork [oh-my-pi](https://github.com/can1357/oh-my-pi) does add native MCP support. If you're using that fork, configure it the same way as Claude Desktop (JSON with `mcpServers` key).
+
+Both `TAVILY_API_KEY` and `NVD_API_KEY` are included in the examples above. See [API keys](#api-keys) for details on obtaining them.
+
+## CLI usage
+
+Both `veripak` and `vpk` work as entry points. Check the installed version with `veripak --version`.
+
+Configure your LLM backend and API keys interactively:
+
+```bash
+veripak config
+```
+
+Or set individual values programmatically:
+
+```bash
+veripak config set llm_backend anthropic
+veripak config set anthropic_api_key sk-ant-...
+veripak config get llm_backend
+veripak config list
+```
+
+Run an audit:
+
+```bash
+$ veripak check django --ecosystem python --versions 4.2.0
+
+  Package:     django  (python)
+  EOL:         supported  (cycle 4.2, latest patch: 4.2.16)
+  Version:     5.1.6  [pypi]
+  Download:    confirmed  [pypi]
+  CVEs:        3 total  (1 HIGH/CRITICAL)  [osv]
+
+  Summary:
+    Version gap:    4 minor versions behind
+    Migration:      moderate  (breaking change likely)
+    Urgency:        MEDIUM
+    Recommend:      Update to 5.1.x; review breaking changes in 5.0 release notes
+```
+
+```bash
+# Basic check (ecosystem inferred automatically)
+veripak check requests
+
+# Specify ecosystem and versions in use
+veripak check log4j --ecosystem java --versions 2.14.0,2.15.0
+
+# Machine-readable JSON output
+veripak check openssl --ecosystem c --json
+
+# Skip CVE check (faster)
+vpk check requests --no-cves
+
+# Skip download validation
+vpk check lodash --ecosystem javascript --no-download
+
+# Check a replacement package
+veripak check nose --ecosystem python --replacement pytest
+```
+
+Additional flags: `--verbose` (show agent debug info and token usage), `--release-notes-url`, `--repository-url`, `--homepage`, `--download-url` (supply known URLs to skip discovery), and `--no-summary` (skip AI security summary). Run `veripak check --help` for the full list.
+
+Note: if a package name exists in multiple ecosystems (e.g., `jsoup` on both PyPI and Maven), veripak will ask you to specify `--ecosystem` rather than guessing.
+
+## API keys
+
+| Key | Required | Purpose |
+|---|---|---|
+| `TAVILY_API_KEY` | Recommended | Web search for non-registry ecosystems (c, cpp, system). Not strictly required for registry-based ecosystems. [Get a key](https://app.tavily.com/home) (free tier: 1,000 requests/month). |
+| `NVD_API_KEY` | Recommended | CVE lookups via the National Vulnerability Database. Without a key, rate limits are 5 requests per 30 seconds; with one, 50 per 30 seconds. [Request a key](https://nvd.nist.gov/developers/request-an-api-key) (free, instant via email). |
+| `ANTHROPIC_API_KEY` | CLI only | LLM calls via the Anthropic SDK for the agent pipeline. Not needed when using the MCP server. |
+
+Keys are resolved in this order: environment variables (highest priority), then `~/.config/veripak/config.json`, then `.env` in the project root.
+
+Run `veripak config` to set keys and LLM backend interactively. The config wizard stores values in `~/.config/veripak/config.json`. For MCP server deployments, environment variables are usually more convenient since you pass them directly in the server configuration.
+
+## Supported ecosystems
+
+veripak supports packages from 7 registry-backed ecosystems (PyPI, npm, Maven Central, Go proxy, NuGet, MetaCPAN, Packagist) plus a catch-all for non-registry software (C/C++ libraries, system packages, desktop apps, drivers) that uses web search + LLM inference.
+
+| Ecosystem | Version source | CVE source |
+|---|---|---|
+| python | PyPI API | OSV.dev |
+| javascript | npm registry | OSV.dev |
+| java | Maven Central | OSV.dev |
+| go | Go proxy | OSV.dev |
+| dotnet | NuGet API | OSV.dev |
+| perl | MetaCPAN | OSV.dev |
+| php | Packagist | OSV.dev |
+| c, cpp, system, desktop-app, driver | Tavily + LLM | NVD API |
+
+## veripak vs OSV-Scanner
+
+Google's [OSV-Scanner](https://github.com/google/osv-scanner) is a purpose-built vulnerability scanner designed for CI pipelines. It scans lockfiles and dependency manifests, checks them against the OSV database, and exits with a non-zero code if vulnerabilities are found. It's fast, lightweight, and the right tool for CI gates.
+
+veripak is a holistic dependency health auditor. Beyond CVE exposure, it checks version staleness, end-of-life status, download availability, and replacement package viability. The CLI runs LLM agents that reason about ambiguous signals and flag items for human review. The MCP server gives AI coding assistants structured access to the same data sources so they can make informed dependency decisions.
+
+Use OSV-Scanner in your CI pipeline. Use veripak (especially via MCP) when an AI agent or a human needs to evaluate whether a dependency is healthy, not just whether it has known vulnerabilities.
+
+## How it works
+
+This section describes the internal architecture -- useful for contributors and anyone curious about what happens under the hood.
+
+The CLI runs a parallel agent-based pipeline where LLM agents handle non-deterministic lookups (EOL reasoning, CVE triage, ecosystem inference) and deterministic checkers handle registry APIs:
+
+```
+                    +-------------------------+
+                    |      PACKAGE INPUT      |
+                    |  name, versions_in_use, |
+                    |  urls, replacement_name |
+                    +-----------+-------------+
+                                |
+                    +-----------v-------------+
+                    |   E0: ECOSYSTEM AGENT   |
+                    |                         |
+                    |  1. LLM: "What is this?"|
+                    |     -> "java" (instant)  |
+                    |                         |
+                    |  2. Validate: probe     |
+                    |     Maven/PyPI/npm/etc  |
+                    |     -> confirmed        |
+                    |                         |
+                    |  3. If no hit: Tavily   |
+                    |     search to confirm   |
+                    +-----------+-------------+
+                                |
+                  +-------------+-------------+
+                  |       FORK (parallel)     |
+                  |                           |
+         +--------v--------+     +------------v-----------+
+         |  TRACK A        |     |  TRACK B               |
+         |                 |     |                        |
+         |  N1: VERSION    |     |  EOL AGENT             |
+         |  (registry API) |     |  (single agentic loop) |
+         |       |         |     |                        |
+         |       v         |     |  - Is version EOL?     |
+         |  N2: DOWNLOAD   |     |  - Is project dead?    |
+         |   discovery     |     |  - What's the          |
+         |       |         |     |    replacement?        |
+         |       v         |     |                        |
+         |  N3: DOWNLOAD   |     |                        |
+         |   validation    |     +------------+-----------+
+         +--------+--------+                  |
+                  +-------------+-------------+
+                                |
+                          JOIN  |
+                                |
+                  +-------------+-------------+
+                  |       FORK (parallel)     |
+                  |                           |
+         +--------v--------+     +------------v-----------+
+         |  TRACK C        |     |  TRACK D               |
+         |                 |     |                        |
+         |  N5: REPLACEMENT|     |  CVE AGENT             |
+         |  VALIDATION     |     |  (agentic loop)        |
+         |  (only if EOL   |     |                        |
+         |   agent found   |     |  Uses: version from    |
+         |   a replacement |     |  Track A, EOL status   |
+         |   to validate)  |     |  from Track B          |
+         +--------+--------+     +------------+-----------+
+                  |                            |
+                  +-------------+--------------+
+                                |
+                          JOIN  |
+                                |
+                    +-----------v-------------+
+                    |  N6: SUMMARY AGENT      |
+                    |                         |
+                    |  All raw results +      |
+                    |  deterministic guards + |
+                    |  HITL flags propagated  |
+                    +-----------+-------------+
+                                |
+                    +-----------v-------------+
+                    |    FINAL RESULT JSON    |
+                    +-------------------------+
+```
+
+Four specialized LLM agents (Ecosystem, EOL, CVE, Summary) enable reasoning about gaps and iterating on incomplete results. The agents use tools (registry probes, web search, GitHub API, advisory page fetching) and can flag fields for human review when data sources are inaccessible or signals are contradictory. Tracks A+B and C+D run in parallel via `ThreadPoolExecutor`.
+
+**MCP server path:** When running as an MCP server (`veripak serve`), the LLM agents are bypassed entirely. The pipeline uses deterministic checkers only -- direct API calls to package registries, OSV.dev, NVD, and endoflife.date. The calling agent's LLM handles interpretation of the raw results.
+
+## Documentation
+
+The [docs/](https://github.com/rdwj/veripak/tree/main/docs) directory contains maintainer reference material.
+Design specs and retrospectives live in [planning/](https://github.com/rdwj/veripak/tree/main/planning),
+and technical investigations in [research/](https://github.com/rdwj/veripak/tree/main/research).
+See [docs/README.md](https://github.com/rdwj/veripak/blob/main/docs/README.md) for a full index.
+
+## Development
+
+```bash
+# Clone and install for development (includes MCP dependencies)
+git clone https://github.com/rdwj/veripak.git
+cd veripak
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+
+# Run tests
+pytest
+
+# Run tests with coverage
+pytest --cov=veripak --cov-report=term-missing
+
+# Lint
+ruff check src tests
+
+# Build distribution
+python -m build
+```
+
+Line length limit: 100 (ruff). Rule sets: E, W, F, I, B, C4, UP.
+
+## Changelog
+
+### 0.5.0
+
+- **CVE cross-validation**: LLM-sourced CVE IDs are now verified against OSV.dev and NVD before inclusion in results; unverified CVEs are dropped with a HITL flag
+- **Maven coordinate support**: `groupId:artifactId` format (e.g., `org.jsoup:jsoup`) now resolves correctly via Maven metadata XML instead of the stale Solr search endpoint
+- **Ecosystem ambiguity detection**: when a package name exists in multiple registries (e.g., `jsoup` on both PyPI and Maven), veripak requires `--ecosystem` instead of silently picking one
+- **EOL release-date heuristic**: when endoflife.date has no data, veripak falls back to last-release-date analysis (active / maintenance / possibly EOL) for PyPI, npm, Maven, and Go packages
+- **Non-interactive config**: `veripak config set <key> <value>`, `veripak config get <key>`, and `veripak config list` for programmatic configuration
+- **Verbose flag**: `--verbose / -v` controls visibility of agent debug info and token usage; these fields are now hidden by default in both human-readable and JSON output
+
+### 0.4.1
+
+- Remove remaining litellm references from documentation and comments
+
+### 0.4.0
+
+- Replace litellm with direct openai + anthropic SDKs for improved security and reduced dependency footprint
+
+### 0.3.0
+
+- MCP server support (`veripak serve`) with FastMCP v3
+- `veripak --version` flag
+- Deterministic-only pipeline mode for MCP integration
+- Environment variable support for API key configuration
+- Data gap reporting in MCP responses
+
+### 0.2.0
+
+- Parallel agent-based pipeline (v2) replacing serial checker pipeline
+- Token usage tracking and cost estimation
+- Agent budget exhaustion handling
+- EOL cross-pollination from EOL agent to version track
+- Summary prompt refinements for accuracy
+- Project automation: CLAUDE.md, `/create-release` slash command, `.claude/` configuration
+
+### 0.1.0
+
+- Initial release with hybrid agent/checker architecture
+- CLI with `veripak check` and `veripak config` commands
+- Support for Ollama, Anthropic, OpenAI, and vLLM backends
+- CI/CD pipeline with GitHub Actions and PyPI trusted publishing
+
+---
+
+## `CLAUDE.md`
+
+# veripak — CLAUDE.md
+
+## Project Overview
+
+veripak is a CLI tool for auditing open-source package health: latest version, EOL status,
+CVE exposure, download validation, and replacement package confirmation. It uses a parallel
+agent-based pipeline where LLM agents handle non-deterministic lookups (EOL, CVEs, ecosystem
+inference) and deterministic checkers handle registry APIs. Published to PyPI as `veripak`;
+both `veripak` and `vpk` are registered as CLI entry points.
+
+GitHub: https://github.com/rdwj/veripak
+
+## Architecture
+
+```
+E0: Ecosystem agent (blocking)
+    |
+  FORK 1 (parallel)
+    Track A: N1 version (registry API) → N2 download discovery → N3 download validation
+    Track B: EOL agent (LLM agentic loop)
+  JOIN 1
+    |
+  FORK 2 (parallel)
+    Track C: N5 replacement validation (deterministic, only if EOL agent found a replacement)
+    Track D: CVE agent (LLM agentic loop)
+  JOIN 2
+    |
+  N6: Summary agent
+```
+
+Tracks A+B and C+D use `ThreadPoolExecutor` for parallelism — no async complexity.
+
+### Source layout
+
+```
+src/veripak/
+  agent.py             # PackageCheckAgent orchestrator
+  cli.py               # Click entry point (veripak / vpk)
+  config.py            # Config file load/save (~/.config/veripak/config.json)
+  model_caller.py      # LLM backend abstraction (openai + anthropic SDKs); tracks token usage
+  tavily.py            # Tavily search helper
+  version.py           # __version__ constant (must stay in sync with pyproject.toml)
+  agents/
+    base.py            # BaseAgent, HITLFlag, _extract_on_budget()
+    ecosystem_agent.py # E0: ecosystem inference
+    eol_agent.py       # Track B: EOL + replacement discovery
+    cve_agent.py       # Track D: CVE lookup
+  checkers/
+    versions.py        # N1: deterministic version lookup (PyPI, npm, Maven, etc.)
+    download_discovery.py  # N2: URL construction/discovery
+    downloads.py       # N3: HTTP HEAD validation
+    replacements.py    # N5: replacement package confirmation
+    summarize.py       # N6: summary agent (via model_caller)
+    cves.py            # Deterministic CVE fallback (OSV.dev, NVD) + CVE ID validation
+    eol.py             # Deterministic EOL fallback (endoflife.date) + release-date heuristic
+    ecosystem.py       # Deterministic ecosystem inference + ambiguity detection
+    migration.py       # Migration complexity helpers
+
+prompts/               # YAML prompt templates for agents
+tests/
+  test_checkers.py
+  test_cli_config.py
+```
+
+## Development
+
+Requirements: Python >= 3.10
+
+```bash
+# Install for development
+pip install -e ".[dev]"
+
+# Run tests
+pytest
+
+# Run tests with coverage report
+pytest --cov=veripak --cov-report=term-missing
+
+# Lint
+ruff check src tests
+
+# Build distribution
+python -m build
+```
+
+Line length limit: 100 (ruff). Ruff rule sets: E, W, F, I, B, C4, UP.
+
+## Version Management
+
+Version is tracked in **two files that must always be in sync**:
+
+- `src/veripak/version.py` — `__version__ = "0.2.0"`
+- `pyproject.toml` — `version = "0.2.0"`
+
+Never edit just one. Use the release script or update both together.
+
+## Releasing
+
+Preferred — use the `/create-release` slash command if available.
+
+Manual:
+
+```bash
+./scripts/release.sh <version> "<commit message>"
+# Example: ./scripts/release.sh 0.3.0 "feat: Add perl ecosystem support"
+```
+
+The script: bumps both version files, commits, pushes to main, tags `v<version>`, pushes
+the tag. GitHub Actions then runs tests, creates a GitHub Release, builds dist packages, and
+publishes to PyPI via trusted OIDC (no API token needed).
+
+Always run tests and linting before releasing. You cannot re-publish the same version to PyPI.
+
+Monitor: https://github.com/rdwj/veripak/actions
+
+## API Keys
+
+| Key | Required | Purpose |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | Yes (agent pipeline) | LLM calls via anthropic SDK |
+| `OPENAI_API_KEY` | Only if openai backend | LLM calls via openai SDK |
+| `TAVILY_API_KEY` | Yes | Web search for non-programmatic ecosystems (c, cpp, system, etc.) |
+| `NVD_API_KEY` | Optional | Raises CVE rate limit from 5 req/10s to 50 req/30s |
+
+Keys are read from: environment variables first, then `.env` in project root, then `~/.zshrc`.
+The `.env` file is gitignored.
+
+LLM backend and model are configured via `veripak config` (interactive) or
+`veripak config set <key> <value>` (programmatic) and stored in
+`~/.config/veripak/config.json`. Supported backends: Ollama (default), Anthropic,
+OpenAI, vLLM.
+
+## Ecosystem Coverage
+
+| Ecosystem | Version source | CVE source |
+|---|---|---|
+| python | PyPI API | OSV.dev |
+| javascript | npm registry | OSV.dev |
+| java | Maven Central | OSV.dev |
+| go | Go proxy | OSV.dev |
+| dotnet | NuGet API | OSV.dev |
+| perl | MetaCPAN | OSV.dev |
+| php | Packagist | OSV.dev |
+| c, cpp, system, desktop-app, driver | Tavily + LLM | NVD API |
+
+## Key Design Decisions
+
+**Agent budget exhaustion** — `_extract_on_budget()` in `agents/base.py` gives the model one
+final synthesis turn when the tool-call budget runs out. This turn MUST include `tool_schemas`
+in the API call because Anthropic rejects requests that have tool calls in history but no
+`tools` parameter.
+
+**NVD keyword search is unreliable** for popular packages (ordering problems). Prefer OSV.dev
+product-level queries. For .NET, check `github.com/dotnet/core/release-notes/{version}/cve.md`
+directly.
+
+**Deterministic checkers are fallbacks.** The agents (EOL, CVE) are the primary pipeline.
+Checkers in `checkers/` exist for when agents are skipped or fail, and as sub-tools that
+agents can call.
+
+**Cross-pollination between tracks** — after Join 1, `agent.py` reconciles version results:
+if the version checker returned the user's own in-use version (stale data) but the EOL agent
+found the real current version, the EOL agent's value wins.
+
+**HITL flags** — agents emit `HITLFlag` objects when a field needs human review (data source
+inaccessible, signals contradictory, etc.). These propagate through `AgentState.hitl_flags`
+and appear in the result JSON as `hitl_flags`.
+
+**CVE cross-validation** — after the CVE agent returns, `agent.py` calls
+`checkers.cves.validate_cve_ids()` to verify each CVE ID against OSV.dev/NVD. Unverified
+CVEs are dropped (not downgraded) and a HITL flag is emitted. This prevents hallucinated
+CVE IDs from smaller models from reaching the output.
+
+**Maven metadata XML** — `checkers/versions.py` prefers `maven-metadata.xml` from the
+Maven Central repository over the Solr search endpoint for coordinate-format lookups
+(`groupId:artifactId`). The search endpoint can return stale `latestVersion` data.
+
+**Ecosystem ambiguity** — `checkers/ecosystem.py` has `detect_ecosystem_ambiguity()` that
+probes all registries. The CLI refuses to proceed when a package exists in 2+ ecosystems
+without an explicit `--ecosystem` flag.
+
+**EOL release-date heuristic** — `checkers/eol.py` has `check_eol_heuristic()` as a
+fallback when endoflife.date has no data. Uses last release date from PyPI/npm/Maven/Go
+with thresholds: <1y active, 1-3y maintenance, >3y possibly_eol.
+
+**Verbose flag** — debug fields (`_agent`, `_usage`) are filtered at the CLI layer, not
+in the pipeline. The MCP server has its own filtering. The pipeline always computes them.
+
+---
+
+## `docs/README.md`
+
+# Documentation
+
+veripak is a CLI tool and MCP server for auditing open-source package health.
+For installation, usage, and MCP setup, start with the [root README](../README.md).
+
+## In this directory
+
+- [PUBLISHING.md](PUBLISHING.md) -- Setting up and using PyPI trusted publishing
+  with GitHub Actions OIDC. Maintainer-facing.
+
+## Elsewhere in the repo
+
+- [**planning/**](../planning/) -- Design specs and retrospectives. Includes the
+  original v2 agent architecture plan and sprint post-mortems.
+- [**research/**](../research/) -- Investigations and technical analyses that
+  informed project decisions.
+- [**prompts/**](../prompts/) -- YAML and Markdown prompt templates loaded at
+  runtime by the agent pipeline. These are live configuration, not static docs.
+
+## Project reference
+
+| Document | Purpose |
+|---|---|
+| [README.md](../README.md) | Install, CLI usage, MCP setup, supported ecosystems, architecture |
+| [CONTRIBUTING.md](../CONTRIBUTING.md) | Fork/branch/PR workflow, commit conventions, bug reporting |
+| [SECURITY.md](../SECURITY.md) | Vulnerability reporting policy and contacts |
+| [CLAUDE.md](../CLAUDE.md) | Developer operations manual and architecture reference (for Claude Code) |
+
+---
+
+## `docs/PUBLISHING.md`
+
+# Publishing to PyPI with GitHub Trusted Publishing
+
+This document explains how to publish `veripak` to PyPI using GitHub Actions and trusted publishing (OIDC).
+
+## Overview
+
+We use **GitHub's trusted publishing** feature, which eliminates the need for API tokens. GitHub authenticates directly with PyPI using OpenID Connect (OIDC).
+
+## One-Time Setup Steps
+
+### 1. Configure PyPI Trusted Publishing
+
+1. **Go to PyPI** (create account if needed): https://pypi.org/account/register/
+
+2. **Navigate to Publishing Settings**:
+   - Go to https://pypi.org/manage/account/publishing/
+   - Or: Account → Publishing → Add a new pending publisher
+
+3. **Add GitHub as Trusted Publisher**:
+   - **PyPI Project Name**: `veripak`
+   - **Owner**: `rdwj`
+   - **Repository name**: `veripak`
+   - **Workflow name**: `release.yml`
+   - **Environment name**: `pypi`
+
+   Click "Add"
+
+**Important**: You must configure trusted publishing BEFORE creating your first release. PyPI will create the project automatically on first publish.
+
+### 2. Create GitHub Environment (Optional but Recommended)
+
+This adds an extra approval step before publishing:
+
+1. Go to your repository: https://github.com/rdwj/veripak
+2. Navigate to **Settings → Environments**
+3. Click **New environment**
+4. Name it: `pypi`
+5. Configure protection rules:
+   - **Required reviewers**: Add yourself
+   - **Deployment branches**: Only `main` branch
+
+## Publishing a New Release
+
+### Using the Release Script (Recommended)
+
+```bash
+# From project root
+./scripts/release.sh 0.2.0 "Add new feature X"
+```
+
+The script will:
+1. Update version in `src/veripak/version.py` and `pyproject.toml`
+2. Commit the version bump
+3. Push to main
+4. Create and push a git tag
+
+GitHub Actions will then automatically:
+1. Run tests
+2. Create a GitHub Release
+3. Build distribution packages
+4. Publish to PyPI
+
+### Monitor the Release
+
+- **Actions**: https://github.com/rdwj/veripak/actions
+- **Release**: https://github.com/rdwj/veripak/releases
+
+## Verification
+
+After the workflow completes:
+
+1. **Check PyPI**: https://pypi.org/project/veripak/
+2. **Test installation**:
+   ```bash
+   pipx install veripak
+   veripak --version
+   ```
+
+## Troubleshooting
+
+### "Trusted publishing authentication error"
+
+Verify settings at https://pypi.org/manage/account/publishing/:
+- Owner: `rdwj`
+- Repository: `veripak`
+- Workflow: `release.yml`
+- Environment: `pypi`
+
+### "Environment protection rules"
+
+Go to Actions → Workflow run → "Review deployments" → Approve.
+
+### "Package already exists"
+
+You cannot re-publish the same version. Increment the version number.
+
+### Manual Upload (Emergency Fallback)
+
+```bash
+python -m build
+pip install twine
+twine upload dist/*
+```
+
+Use `__token__` as username and your PyPI API token as password.
+
+## Security Notes
+
+- No API tokens stored in the repository
+- GitHub authenticates directly with PyPI via OIDC
+- Workflow runs in isolated environment
+- Environment protection rules add an approval step
+- Only maintainers can create releases
+
+---
+
+## `CONTRIBUTING.md`
+
+# Contributing to veripak
+
+Thanks for your interest in contributing!
+
+## Getting started
+
+1. Fork the repository
+2. Clone your fork locally
+3. Create a branch for your change: `git checkout -b my-change`
+4. Make your changes, with tests where applicable
+5. Run the test suite and any linting the project uses
+6. Open a pull request against `main`
+
+## Commit messages
+
+Use the [conventional commits](https://www.conventionalcommits.org/) format:
+
+- `feat: add new feature`
+- `fix: correct the X bug`
+- `docs: update contributor guide`
+- `refactor: simplify Y module`
+- `test: add coverage for Z`
+- `chore: update dependencies`
+
+The commit body should explain the *why* behind the change, not just the *what*. A reader in six months should be able to understand the motivation without pulling up a design doc.
+
+## Pull requests
+
+- Keep PRs focused. One feature or fix per PR is ideal; split large changes into reviewable pieces.
+- Include tests for new behavior.
+- Update docs when you change user-facing behavior.
+- Link related issues in the PR description (`Closes #123`, `Relates to #456`).
+- Make sure CI is green before requesting review.
+
+## Code style
+
+Follow the conventions already in the codebase. If the project uses a formatter or linter, run it before pushing.
+
+## Reporting bugs
+
+Open an issue with:
+- A clear description of what went wrong
+- Steps to reproduce
+- What you expected vs. what happened
+- Version / commit hash
+
+## Security issues
+
+Do NOT open a public issue for security vulnerabilities. See [SECURITY.md](SECURITY.md) for the private reporting process.
+
+## Questions
+
+Open an issue with the `question` label, or reach out via the contact in [SECURITY.md](SECURITY.md) for anything sensitive.
+
+## Code of conduct
+
+Be kind, be direct, and assume good intent. Technical disagreements are welcome; personal attacks are not.
+
+---
+
+## `SECURITY.md`
+
+# Security Policy
+
+## Reporting a vulnerability
+
+If you discover a security vulnerability in this project, please **report it privately** rather than opening a public issue.
+
+**Contact:** [@rdwj](https://github.com/rdwj)
+
+When reporting, please include:
+
+- A clear description of the issue
+- Steps to reproduce, if applicable
+- The affected version(s) or commit hash
+- Any mitigation or workaround you have identified
+
+We will acknowledge your report within 5 business days and work with you on a reasonable disclosure timeline. Please give us an opportunity to investigate and patch before public disclosure.
+
+## Supported versions
+
+| Version | Supported          |
+|---------|--------------------|
+| latest  | :white_check_mark: |
+| older   | Best-effort        |
+
+## Scope
+
+This policy covers vulnerabilities in the code and configurations maintained in **this** repository. Issues in upstream dependencies should be reported to those projects directly.
+
+## Recognition
+
+We appreciate responsible disclosure. If you would like to be credited in the release notes for a fix, let us know in your report.
+
+---
+
+## `prompts/summary_rules.md`
+
+# Security Summary Agent Rules
+
+These rules apply to all security summary analysis. They encode domain knowledge about package upgrade complexity and risk assessment.
+
+## Version gap and migration complexity
+
+A version gap is classified by how the major version number changes:
+- **Patch** (same major.minor, different patch): Apply immediately. Low migration risk.
+- **Minor** (same major, different minor): Plan and test. Usually backwards-compatible but review changelogs.
+- **Major** (different major version): Treat as a migration project. Assume breaking changes until proven otherwise.
+
+When assessing a major version gap, explicitly note that upgrading is likely a breaking change and requires a migration plan, not just a package update. Do not phrase a major-version upgrade as "just upgrade to X."
+
+## Ecosystem-specific breaking change patterns
+
+- **.NET / dotnet**: Major versions change the Target Framework Moniker (TFM). Code targeting `net6.0` must be recompiled for `net8.0`. API removals and behavioral changes are common. This is a code change, not just a runtime swap.
+- **Grafana**: Major versions frequently break dashboard JSON models, plugin APIs, and data source configurations. A Grafana 6.x → 12.x migration requires testing all dashboards and plugins.
+- **Node.js**: Major LTS versions deprecate APIs. Check for use of removed APIs before upgrading.
+- **Java / Spring**: Major version upgrades often require dependency alignment across the entire project.
+
+## Urgency classification
+
+Assign urgency based on the combination of factors:
+- **immediate**: EOL + any HIGH or CRITICAL CVE
+- **high**: EOL without CVEs, or active support + CRITICAL CVE
+- **medium**: Active support + HIGH CVEs, or EOL without CVEs but major version gap
+- **low**: Active support + only MEDIUM/LOW CVEs
+- If the package has ANY CRITICAL-severity CVE, urgency should typically be at least "high" unless analysis finds the CVE is not exploitable in the package's common usage context.
+- If the package is EOL AND has a major version gap, urgency should typically be at least "medium".
+- Rating urgency as "low" requires explicit justification when there are unpatched HIGH or CRITICAL CVEs.
+
+## Required fields
+
+You MUST always provide a value for `migration_complexity` when version data is available. Valid values are: `patch`, `minor`, `major`, `rewrite`, `unknown`. Use the pre-computed value from the audit data if you have no additional information to override it. A gap spanning 5+ major versions should use `rewrite`. Similarly, `urgency`, `breaking_change_likely`, `upgrade_path`, and `recommendation` must always be filled when sufficient data exists to determine them — do not leave them null.
+
+## Recommendation framing
+
+- For patch upgrades: "Update to X.Y.Z to remediate [N] CVEs."
+- For minor upgrades: "Plan an upgrade to X.Y.Z; review changelog for breaking changes."
+- For major upgrades: "Initiate a migration project to [latest]. This is a breaking change — allocate engineering time for code changes, testing, and validation."
+- Always name the target version. Never say "upgrade to the latest" without specifying the version number.
+
+## Future enhancement: CISA KEV integration
+
+TODO: Add a lookup against the CISA Known Exploited Vulnerabilities catalog
+(https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json).
+Any CVE in the KEV catalog should automatically set urgency to "immediate".
+
+---
+
+## `planning/PLAN.md`
+
+# veripak v2: Agent-Based Architecture
+
+## Overview
+
+Replace the current serial deterministic pipeline with a parallel agent-based
+architecture. Three specialized agents (Ecosystem, EOL, CVE) replace fixed code
+paths, enabling reasoning about gaps and iterating on incomplete results.
+
+## Architecture Diagram
+
+```
+                        +-------------------------+
+                        |      PACKAGE INPUT      |
+                        |  name, versions_in_use, |
+                        |  urls, replacement_name |
+                        +-----------+-------------+
+                                    |
+                        +-----------v-------------+
+                        |   E0: ECOSYSTEM AGENT   |
+                        |                         |
+                        |  1. LLM: "What is this?"|
+                        |     -> "java" (instant)  |
+                        |                         |
+                        |  2. Validate: probe     |
+                        |     Maven/PyPI/npm/etc  |
+                        |     -> confirmed        |
+                        |                         |
+                        |  3. If no hit: Tavily   |
+                        |     search to confirm   |
+                        +-----------+-------------+
+                                    |
+                  +-----------------+-----------------+
+                  |            FORK (parallel)        |
+                  |                                   |
+         +--------v--------+             +------------v-----------+
+         |  TRACK A        |             |  TRACK B               |
+         |                 |             |                        |
+         |  N1: VERSION    |             |  EOL AGENT             |
+         |  (registry API) |             |  (see detail below)    |
+         |       |         |             |                        |
+         |       v         |             |  Phase 1: Is version   |
+         |  N2: DOWNLOAD   |             |    EOL?                |
+         |   discovery     |             |  Phase 2: Is project   |
+         |       |         |             |    dead?               |
+         |       v         |             |  Phase 3: What's the   |
+         |  N3: DOWNLOAD   |             |    replacement?        |
+         |   validation    |             |                        |
+         +--------+--------+             +------------+-----------+
+                  |                                   |
+                  +-----------------+-----------------+
+                                    |
+                              JOIN  |
+                                    |
+                  +-----------------+-----------------+
+                  |            FORK (parallel)        |
+                  |                                   |
+         +--------v--------+             +------------v-----------+
+         |  TRACK C        |             |  TRACK D               |
+         |                 |             |                        |
+         |  N5: REPLACEMENT|             |  CVE AGENT             |
+         |  VALIDATION     |             |  (agentic loop)        |
+         |  (only if EOL   |             |                        |
+         |   agent found   |             |  Uses: version from    |
+         |   a replacement |             |  Track A, EOL status   |
+         |   to validate)  |             |  from Track B          |
+         +--------+--------+             +------------+-----------+
+                  |                                   |
+                  +-----------------+-----------------+
+                                    |
+                              JOIN  |
+                                    |
+                        +-----------v-------------+
+                        |  N6: SUMMARY AGENT      |
+                        |                         |
+                        |  All raw results +      |
+                        |  deterministic guards + |
+                        |  HITL flags propagated  |
+                        +-----------+-------------+
+                                    |
+                        +-----------v-------------+
+                        |    FINAL RESULT JSON    |
+                        +-------------------------+
+```
+
+## Implementation Plan
+
+### Phase 1: EOL Agent
+
+Replace the current `eol.py` (577 lines of deterministic heuristics) with an
+LLM agent that has tools.
+
+**New file:** `src/veripak/agents/eol_agent.py`
+
+**Tools the agent gets:**
+- `web_search(query)` — Tavily search
+- `check_registry(package, ecosystem)` — get versions, release dates
+- `check_github(repo_url)` — branches, last commit, archived status
+- `fetch_page(url)` — read a URL (may fail on AI blockers)
+- `flag_hitl(field, reason)` — mark field for human review
+
+**Agent phases:**
+
+Phase 1 — Is this version EOL?
+1. `web_search("{name} {version} end of life")` and
+   `web_search("{name} lifecycle support policy")`
+2. If a lifecycle page URL is found, `fetch_page(url)` to read it.
+   If fetch fails (AI blocker), `flag_hitl("eol", "Cannot access {url}")`.
+3. `check_registry(name, ecosystem)` — last release on this branch?
+4. Evaluate signals. Need 2+ to assert EOL:
+   - Signal A: Lifecycle page says EOL (strong)
+   - Signal B: No branch releases in 12 months (strong)
+   - Signal C: endoflife.date says EOL (supporting)
+   - Signal D: Vendor announcement (strong)
+   - Signal E: Registry deprecated flag (strong)
+   - Signal F: Version gap alone (supporting, never sufficient alone)
+   - Rule: need >=1 strong + >=1 any, OR >=3 supporting
+
+Phase 2 — Is the project dead? (only if Phase 1 says EOL)
+1. `check_github(repo)` — last commit on ANY branch
+2. `check_registry` — any version released in past year?
+3. `web_search("{name} deprecated replacement alternative")`
+4. Outcomes: project alive (version EOL), project dead, project archived
+
+Phase 3 — What's the replacement?
+- If project alive: `check_registry` for current/LTS version
+- If project dead: use search results from Phase 2 for successor package
+- If can't determine: `flag_hitl("replacement", "...")`
+
+**Returns:**
+```json
+{
+  "eol": true,
+  "eol_date": "2025-04-01",
+  "confidence": "high",
+  "project_status": "active",
+  "signals": [
+    {"source": "https://nodejs.org/...", "type": "lifecycle_page",
+     "says": "Node 18 EOL April 2025"},
+    {"source": "npm registry", "type": "branch_activity",
+     "says": "Last 18.x release: 18.20.8 (March 2025)"}
+  ],
+  "current_version": "25.6.1",
+  "recommended_version": "22.15.0",
+  "replacement_package": null,
+  "hitl_flags": []
+}
+```
+
+**What to keep from current eol.py:**
+- `check_eol()` (endoflife.date API) becomes the `check_endoflife_date` tool
+- `_check_github_status()` becomes part of `check_github` tool
+- `_check_npm_deprecated()` and `_check_pypi_inactive()` become part of
+  `check_registry` tool
+- Everything else (version gap heuristic, Tavily+LLM jury-rig) is replaced
+  by the agent's own reasoning
+
+**System prompt for EOL agent:**
+> You are determining whether **version {version}** of **{package}** is
+> end-of-life. "End of life" means this specific version/branch no longer
+> receives security patches.
+>
+> A newer version existing does NOT mean the old version is EOL — many
+> projects maintain multiple branches simultaneously (e.g., Node 18 LTS +
+> Node 22 LTS + Node 25 Current).
+>
+> If the version IS EOL, identify what the customer should upgrade to —
+> this is usually a newer version of the SAME package, not a different
+> package.
+>
+> You need at least 2 corroborating signals before asserting eol=true.
+> If you cannot access a key data source (website blocked, API down), use
+> flag_hitl to request human review rather than guessing.
+
+### Phase 2: Ecosystem Agent
+
+Replace the current `ecosystem.py` probe-first approach with LLM-first,
+probe-to-validate.
+
+**New file:** `src/veripak/agents/ecosystem_agent.py`
+
+**Tools:**
+- `probe_registry(package, ecosystem)` — HEAD/GET check against the
+  ecosystem's registry (PyPI, npm, Maven, etc.)
+- `web_search(query)` — Tavily fallback
+
+**Flow:**
+1. LLM call: "What ecosystem is {package}?" → candidate (instant, one call)
+2. `probe_registry(package, candidate)` → confirmed? done.
+3. If probe fails, `web_search("{package} package ecosystem")` → confirm
+4. If still uncertain, LLM retry with search context
+5. If can't determine → raise error asking user for `--ecosystem`
+
+**What to keep from current ecosystem.py:**
+- `_ECOSYSTEM_OVERRIDES` map (stays as a fast pre-check before calling the
+  agent at all)
+- Registry probe functions (`_probe_pypi`, `_probe_npm`, etc.) become the
+  `probe_registry` tool implementation
+- `_infer_via_model` is replaced by the agent's native reasoning
+
+### Phase 3: CVE Agent
+
+Replace the fixed OSV/NVD code path in `cves.py` (919 lines) with an agent
+that can reason about coverage gaps and iterate.
+
+**New file:** `src/veripak/agents/cve_agent.py`
+
+**Tools:**
+- `osv_query(package, version, ecosystem)` — OSV.dev API
+- `nvd_search(keyword, results_per_page)` — NVD API v2
+- `web_search(query)` — Tavily search for advisory pages
+- `fetch_advisory_page(url)` — read a security advisory URL, extract CVE IDs
+- `flag_hitl(field, reason)` — mark for human review
+
+**Agent loop (max 8 turns, max 5 tool calls):**
+1. `osv_query(pkg, ver, eco)` → N CVEs
+2. If N seems low for a major package, `web_search("{pkg} security advisory")`
+3. `fetch_advisory_page(url)` → extract additional CVE IDs
+4. Optionally `nvd_search` to get severity scores for new CVEs
+5. Deduplicate and return scored list
+
+**What to keep from current cves.py:**
+- `_osv_query_version()`, `_osv_query_package()` → `osv_query` tool
+- `_nvd_query()` → `nvd_search` tool
+- `_dedupe_cross_source()` → used by agent to merge results
+- `_discover_security_advisory_cves()` → replaced by agent's own reasoning +
+  `fetch_advisory_page` tool
+- Rate limiting logic for NVD stays in the tool implementation
+
+**System prompt for CVE agent:**
+> You are finding all known CVEs that affect **{package}** version
+> **{version}** ({ecosystem}).
+>
+> Start with the most authoritative source for this ecosystem. For
+> programmatic ecosystems (Python, JavaScript, Java, Go, .NET, Perl, PHP),
+> OSV.dev has precise version-specific data. For system/C/C++ packages, try
+> OSV first then supplement with NVD.
+>
+> If the primary source returns fewer CVEs than expected for a widely-used
+> package, search for the project's official security advisory page and
+> cross-reference.
+>
+> Return a deduplicated list with CVE ID, severity, and summary for each.
+
+### Phase 4: Parallel Orchestration
+
+Rewrite `agent.py` to run agents in parallel where possible.
+
+**Changes to `agent.py`:**
+- E0 (ecosystem) runs first, blocking (needed by everything else)
+- Fork 1: Track A (N1 version → N2/N3 download) || Track B (EOL agent)
+- Join 1: wait for both
+- Fork 2: Track C (N5 replacement validation) || Track D (CVE agent)
+- Join 2: wait for both
+- N6 summary agent runs last with all results
+
+**Parallelism approach:** Use `concurrent.futures.ThreadPoolExecutor` with
+`max_workers=2`. Each track is a callable submitted to the executor. This
+avoids async complexity while still getting wall-clock speedup.
+
+**HITL flag propagation:** Each agent may return `hitl_flags`. The orchestrator
+collects these from all agents and includes them in the final result JSON.
+
+### Phase 5: Agent Infrastructure
+
+Before implementing the agents, we need a lightweight agent runner.
+
+**New file:** `src/veripak/agents/base.py`
+
+Provides:
+- Tool registration and dispatch (tool name → callable mapping)
+- Multi-turn conversation loop with model_caller
+- Turn budget enforcement (max_turns, max_tool_calls)
+- HITL flag collection
+
+This is NOT a framework — it's a thin loop:
+```python
+def run_agent(system_prompt, tools, max_turns=8):
+    messages = [{"role": "system", "content": system_prompt}]
+    hitl_flags = []
+    for turn in range(max_turns):
+        response = model_caller.call_model_chat(messages, tools=tool_schemas)
+        if no tool calls in response:
+            return parse_final_answer(response), hitl_flags
+        for tool_call in response.tool_calls:
+            result = dispatch(tool_call, tool_registry)
+            messages.append(tool_call_result)
+    return timeout_result, hitl_flags
+```
+
+### Phase 6: Summary Agent Updates
+
+Update `summarize.py` to:
+- Accept HITL flags from upstream agents and propagate them
+- Remove the feedback loop from `agent.py` (agents now produce complete data)
+- Use the EOL agent's structured output (signals, confidence) instead of
+  re-deriving EOL status
+
+### Phase 7: Validation and Testing
+
+1. Add unit tests for each agent's tool functions (deterministic, mockable)
+2. Add integration tests that run each agent on the 5 validation packages
+3. Re-run the 5-package validation suite and compare scores to baseline:
+   - apache_poi: 0.786
+   - apache_tomcat: 0.929
+   - axios: 1.000
+   - botan2: 0.786
+   - bottles: 0.821
+   - mean: 0.864
+4. Target: mean >= 0.900
+
+## Implementation Order
+
+```
+Phase 5 (agent infrastructure)   <-- build the runner first
+    |
+    +---> Phase 2 (ecosystem agent)   <-- smallest, validates infra
+    |
+    +---> Phase 1 (EOL agent)         <-- biggest impact
+    |
+    +---> Phase 3 (CVE agent)         <-- most complex
+    |
+Phase 4 (parallel orchestration) <-- wire agents into pipeline
+    |
+Phase 6 (summary updates)
+    |
+Phase 7 (validation)
+```
+
+Phase 5 is the prerequisite. Then Phases 1-3 can be done in any order (each
+is an independent agent). Phase 2 (ecosystem) is the simplest and serves as
+the proof-of-concept for the agent infrastructure. Phase 4 wires everything
+together. Phases 6-7 finalize and validate.
+
+## HITL Flags
+
+Any agent can call `flag_hitl(field, reason)` when:
+- A key URL is blocked (AI blocker, 403, paywall)
+- Signals are contradictory
+- Confidence is low and the data matters
+- Registry data is ambiguous
+
+HITL flags propagate to the final JSON and can drive a dashboard
+"needs human review" queue:
+
+```json
+{
+  "hitl_flags": [
+    {
+      "field": "eol",
+      "agent": "eol_agent",
+      "reason": "Cannot access redhat.com/lifecycle (HTTP 403). Need human to verify RHEL 6 EOL date.",
+      "blocked_url": "https://access.redhat.com/..."
+    }
+  ]
+}
+```
+
+## Scraping Policy
+
+If `fetch_page` fails due to AI blockers and we determine we consistently
+need data from a specific site, we can build a targeted scraper with a
+browser user-agent string. Rules:
+- Extract structured insight only (dates, version numbers, CVE IDs)
+- Drop the raw HTML immediately — never persist scraped content
+- Only for sites where Tavily snippets are insufficient
+
+## File Layout (after implementation)
+
+```
+src/veripak/
+    agents/
+        __init__.py
+        base.py              # agent runner infrastructure
+        ecosystem_agent.py   # E0: ecosystem inference
+        eol_agent.py         # EOL determination (3-phase)
+        cve_agent.py         # CVE discovery (agentic loop)
+    checkers/
+        cves.py              # tool implementations (OSV, NVD queries)
+        downloads.py         # N2/N3 download discovery/validation
+        download_discovery.py
+        ecosystem.py         # registry probe functions (used as tools)
+        eol.py               # endoflife.date API (used as a tool)
+        migration.py         # complexity/breaking-change logic
+        replacements.py      # N5 replacement validation
+        summarize.py         # N6 summary (updated for HITL)
+        versions.py          # N1 version lookup
+    agent.py                 # orchestrator (parallel fork/join)
+    cli.py
+    config.py
+    model_caller.py
+    tavily.py
+```
+
+The `checkers/` directory retains the deterministic functions but they become
+tool implementations callable by agents rather than pipeline stages called
+directly by the orchestrator.
+
+---
+
+## `research/research-litellm-security.md`
+
+# LiteLLM Security Assessment & Replacement Analysis
+
+**Date**: 2026-03-30
+**Context**: veripak depends on `litellm>=1.0` for multi-provider LLM routing
+
+## Summary
+
+LiteLLM was **supply-chain compromised on March 24, 2026** (6 days ago). Versions 1.82.7 and 1.82.8 were published to PyPI with a multi-stage credential stealer by the TeamPCP threat group, who gained access by compromising Aqua Security's Trivy scanner upstream. The malicious versions were live for ~5.5 hours before PyPI quarantined the package. Combined with 13+ pre-existing CVEs (including unpatched RCE and SSRF), litellm represents unacceptable supply chain risk.
+
+**Recommendation**: Replace litellm with **direct provider SDKs** (`openai` + `anthropic`). The migration surface in veripak is small (~186 lines in `model_caller.py`), and both Ollama and vLLM expose OpenAI-compatible APIs, so two SDKs cover all four backends.
+
+## The Supply Chain Attack
+
+### What Happened
+
+1. **TeamPCP** (also known as PCPcat/ShellForce) first compromised **Aqua Security's Trivy** (a security scanner)
+2. LiteLLM's CI/CD ran Trivy **without version pinning** -- the poisoned Trivy binary dumped CI runner memory and scraped credentials
+3. The attacker stole litellm's PyPI publishing token and published malicious versions directly to PyPI
+
+### Affected Versions
+
+- `litellm==1.82.7` -- payload in `proxy_server.py` (executes on module import)
+- `litellm==1.82.8` -- added `litellm_init.pth` that executes on **any Python interpreter startup** (no import required)
+
+### Malware Behavior
+
+**Stage 1 (Credential Harvesting)**: SSH keys, `.env` files, AWS/GCP/Azure credentials, Kubernetes configs, database passwords, crypto wallets, Git credentials, shell history, CI/CD secrets, Terraform/Helm configs, Docker configs, SSL keys.
+
+**Stage 2 (Kubernetes Lateral Movement)**: Read all cluster secrets across all namespaces; attempted to create privileged pods on every node in `kube-system` mounting the host filesystem.
+
+**Stage 3 (Persistence)**: Installed systemd service polling `checkmarx[.]zone/raw` every 50 minutes for follow-on payloads. Exfiltrated data encrypted with AES-256-CBC + RSA-4096, sent to `models.litellm[.]cloud`.
+
+### Timeline
+
+| Date | Event |
+|---|---|
+| March 1 | Aqua Security (Trivy maintainer) suffers initial breach |
+| March 19 | Poisoned Trivy v0.69.4 published |
+| March 23 | Attacker registers `litellm.cloud` for exfiltration |
+| March 24 ~08:30 UTC | Malicious litellm 1.82.7 and 1.82.8 published to PyPI |
+| March 24 ~13:48 UTC | BerriAI discloses the compromise |
+| March 24 ~16:00 UTC | PyPI quarantines the package (~5.5h exposure) |
+| March 27 | SHA-256 checksums published for verified safe versions |
+
+### veripak Impact
+
+veripak's installed version (1.81.13) is clean, but the `>=1.0` pin meant anyone doing a fresh install during the 5.5-hour window could have pulled a compromised version.
+
+## Pre-Existing CVE History
+
+Even before the supply chain attack, litellm had 13+ known vulnerabilities:
+
+| Advisory | Severity | Description | Fixed? |
+|---|---|---|---|
+| GHSA-gppg-gqw8-wh9g | 9.8 CRITICAL | RCE via unsafe `eval()` | Yes |
+| GHSA-46cm-pfwv-cgf8 | CRITICAL | SSTI in `/completions` | Yes |
+| GHSA-53gh-p8jc-7rg8 | 8.8 HIGH | Remote Code Execution | Yes |
+| GHSA-7ggm-4rjg-594w | 7.2 HIGH | Unsafe eval | **No** |
+| GHSA-8j42-pcfm-3467 | MEDIUM | SQL injection | **No** |
+| GHSA-g26j-5385-hhw3 | 8.7 HIGH | SSRF | Yes |
+| GHSA-fjcf-3j3r-78rp | 8.1 HIGH | Improper Authorization | Yes |
+| GHSA-879v-fggm-vxw2 | 7.5 HIGH | Langfuse API key leak | Yes |
+| GHSA-g5pg-73fc-hjwq | 7.5 HIGH | API key in logs | Yes |
+| GHSA-fh2c-86xm-pm2x | 7.5 HIGH | DoS via crafted request | Yes |
+| GHSA-gw2q-qw9j-rgv7 | 7.5 HIGH | DoS | Yes |
+| GHSA-3xr8-qfvj-9p9j | 7.0 HIGH | Arbitrary file deletion | Yes |
+| GHSA-qqcv-vg9f-5rr3 | 5.3 MEDIUM | Improper access control | Yes |
+
+Most CVEs target the proxy server component (not used by veripak), but the pattern of `eval()` usage and SQL injection indicates systemic code quality issues.
+
+## Alternatives Evaluated
+
+| Criterion | litellm | aisuite | LangChain | Direct SDKs |
+|---|---|---|---|---|
+| **Dependencies** | 12 direct | ~2 core | 7+ core | ~9 unique |
+| **Anthropic** | Yes | Yes | Yes | Yes (native) |
+| **OpenAI** | Yes | Yes | Yes | Yes (native) |
+| **Ollama** | Yes | Yes | Yes | Yes (via openai SDK) |
+| **vLLM** | Yes | Workaround | Workaround | Yes (via openai SDK) |
+| **Tool calling** | Yes | Yes | Yes | Yes (native) |
+| **Cost tracking** | Built-in | No | No | DIY |
+| **Supply chain risk** | **HIGH** | Low | Medium | **Lowest** |
+| **Migration effort** | N/A | Medium | High | Low-Medium |
+| **Maturity** | Compromised | v0.1.x, stalled | High | High (first-party) |
+
+### Why Direct SDKs Win
+
+1. **First-party trust**: `openai` and `anthropic` SDKs are maintained by the model providers themselves
+2. **Ollama and vLLM are OpenAI-compatible**: Both expose `/v1/chat/completions`, so the `openai` SDK works with `base_url` override -- two SDKs cover all four backends
+3. **Small migration surface**: veripak uses only `litellm.completion()` and `litellm.completion_cost()` in a single 186-line file (`model_caller.py`)
+4. **Fewer dependencies**: Drops litellm's heavy transitive deps (tiktoken, tokenizers, jinja2, etc.)
+5. **Cost tracking is replaceable**: A small lookup table for per-token pricing replaces `litellm.completion_cost()`
+
+### aisuite (Honorable Mention)
+
+Andrew Ng's [aisuite](https://github.com/andrewyng/aisuite) has the right philosophy (minimal, provider-prefixed model names), but the last PyPI release was November 2025 and vLLM support is missing. Worth watching if development resumes.
+
+## Migration Path
+
+The entire litellm surface in veripak is in `model_caller.py`:
+- `litellm.completion(**kwargs)` -- replace with `openai.chat.completions.create()` or `anthropic.messages.create()`
+- `litellm.completion_cost()` -- replace with a token-count pricing table
+- Response format: both SDKs return `choices[0].message` with `.content` and `.tool_calls`
+
+For Ollama/vLLM backends, instantiate the OpenAI client with a custom `base_url`:
+```python
+client = openai.OpenAI(base_url="http://localhost:11434/v1", api_key="ollama")
+```
+
+The Anthropic SDK uses a different request/response format, so the fallback path needs its own normalization -- but it's straightforward since veripak already branches on backend type in `_resolve_model()`.
+
+## Sources
+
+- [LiteLLM Official Security Update](https://docs.litellm.ai/blog/security-update-march-2026)
+- [Datadog Security Labs: TeamPCP Campaign](https://securitylabs.datadoghq.com/articles/litellm-compromised-pypi-teampcp-supply-chain-campaign/)
+- [Sonatype: Compromised litellm](https://www.sonatype.com/blog/compromised-litellm-pypi-package-delivers-multi-stage-credential-stealer)
+- [Snyk: Poisoned Security Scanner Backdooring LiteLLM](https://snyk.io/articles/poisoned-security-scanner-backdooring-litellm/)
+- [Kaspersky: Trojanization of Trivy, Checkmarx, and LiteLLM](https://www.kaspersky.com/blog/critical-supply-chain-attack-trivy-litellm-checkmarx-teampcp/55510/)
+- [BleepingComputer: Popular LiteLLM PyPI Package Backdoored](https://www.bleepingcomputer.com/news/security/popular-litellm-pypi-package-compromised-in-teampcp-supply-chain-attack/)
+- [GitHub Issue #24518: Full Timeline](https://github.com/BerriAI/litellm/issues/24518)
+- [OSV.dev: LiteLLM Vulnerabilities](https://osv.dev/list?q=litellm&ecosystem=PyPI)
+- [Wiz: TeamPCP Trojanizes LiteLLM](https://www.wiz.io/blog/threes-a-crowd-teampcp-trojanizes-litellm-in-continuation-of-campaign)
+
+---
+

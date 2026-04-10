@@ -1,0 +1,34 @@
+# veripak
+
+> CLI tool and MCP server for auditing open-source package health: version staleness, EOL status, CVE exposure, download validation, and replacement checking.
+
+veripak runs a parallel agent-based pipeline where LLM agents handle non-deterministic lookups and deterministic checkers query package registries, OSV.dev, NVD, and endoflife.date. It also runs as an MCP server in deterministic-only mode for AI coding assistants.
+
+## Start here
+
+- [README](https://github.com/rdwj/veripak/blob/main/README.md): Install, CLI usage, MCP setup for 6 tools, supported ecosystems, architecture diagram
+- [docs/](https://github.com/rdwj/veripak/tree/main/docs): Documentation index with pointers to all project docs
+
+## Architecture and internals
+
+- [CLAUDE.md](https://github.com/rdwj/veripak/blob/main/CLAUDE.md): Authoritative architecture reference, source layout, key design decisions, dev commands
+- [planning/PLAN.md](https://github.com/rdwj/veripak/blob/main/planning/PLAN.md): Original v2 agent architecture design spec (implemented)
+- [prompts/summary_rules.md](https://github.com/rdwj/veripak/blob/main/prompts/summary_rules.md): Rules loaded at runtime by the summary agent
+
+## Contributing
+
+- [CONTRIBUTING.md](https://github.com/rdwj/veripak/blob/main/CONTRIBUTING.md): Fork/branch/PR workflow, commit conventions
+- [SECURITY.md](https://github.com/rdwj/veripak/blob/main/SECURITY.md): Vulnerability reporting policy
+
+## Maintainer operations
+
+- [docs/PUBLISHING.md](https://github.com/rdwj/veripak/blob/main/docs/PUBLISHING.md): PyPI trusted publishing setup and release workflow
+
+## Research and planning
+
+- [research/](https://github.com/rdwj/veripak/tree/main/research): Technical investigations (e.g., litellm security assessment)
+- [planning/](https://github.com/rdwj/veripak/tree/main/planning): Design specs and sprint retrospectives
+
+## Packages
+
+- [PyPI: veripak](https://pypi.org/project/veripak/): Published package (entry points: `veripak`, `vpk`)
