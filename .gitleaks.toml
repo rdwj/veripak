@@ -5,6 +5,8 @@ paths = [
     '''tests?\/fixtures\/''',
     '''examples\/''',
     '''docs\/.*\.md$''',
+    '''planning\/.*\.md$''',
+    '''research\/.*\.md$''',
     '''README\.md$''',
 ]
 

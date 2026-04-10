@@ -333,6 +333,13 @@ Four specialized LLM agents (Ecosystem, EOL, CVE, Summary) enable reasoning abou
 
 **MCP server path:** When running as an MCP server (`veripak serve`), the LLM agents are bypassed entirely. The pipeline uses deterministic checkers only -- direct API calls to package registries, OSV.dev, NVD, and endoflife.date. The calling agent's LLM handles interpretation of the raw results.
 
+## Documentation
+
+The [docs/](https://github.com/rdwj/veripak/tree/main/docs) directory contains maintainer reference material.
+Design specs and retrospectives live in [planning/](https://github.com/rdwj/veripak/tree/main/planning),
+and technical investigations in [research/](https://github.com/rdwj/veripak/tree/main/research).
+See [docs/README.md](https://github.com/rdwj/veripak/blob/main/docs/README.md) for a full index.
+
 ## Development
 
 ```bash

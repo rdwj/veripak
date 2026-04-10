@@ -51,7 +51,7 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
 
           # Extract changelog section for this version from README.md
-          CHANGELOG=$(awk "/### Version $VERSION/,/### Version [0-9]/ { if (/### Version [0-9]/ && !/### Version $VERSION/) exit; if (!/### Version $VERSION/) print }" README.md | sed '/^$/d')
+          CHANGELOG=$(awk "/^### $VERSION$/,/^### [0-9]/ { if (/^### [0-9]/ && !/^### $VERSION$/) exit; if (!/^### $VERSION$/) print }" README.md | sed '/^$/d')
 
           if [ -z "$CHANGELOG" ]; then
             CHANGELOG="Release version $VERSION"
