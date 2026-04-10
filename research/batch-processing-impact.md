@@ -68,23 +68,12 @@ The fix is to scope usage tracking per-run rather than globally. The cleanest op
 passing a collector object into `agent.run()`, returning usage directly from individual
 calls, or using a `contextvars.ContextVar`-based approach that isolates state per thread.
 
-### 2. `cves._nvd_request_times` — HIGH severity
+### 2. `cves._nvd_request_times` — ~~HIGH severity~~ FIXED (d20db50)
 
-The NVD sliding-window rate limiter reads and mutates a module-level list with no lock:
-
-```python
-_nvd_request_times[:] = [t for t in _nvd_request_times if now - t < window]
-if len(_nvd_request_times) >= max_req:
-    ...
-_nvd_request_times.append(time.time())
-```
-
-Two threads can both pass the length check simultaneously, both append, and both send
-requests — defeating the rate limit entirely. NVD has the tightest limits in veripak's
-dependency set (5 req/10s without a key), making this the most dangerous race condition.
-
-The fix is to wrap the rate limiter body in a `threading.Lock`. The `time.sleep()` call must
-remain outside the lock to avoid blocking the entire pool while waiting.
+**Resolved in v0.6.1.** A `threading.Lock` now guards the prune+check+append sequence
+atomically. `time.sleep()` remains outside the lock to avoid blocking the thread pool.
+The original code also had a TOCTOU bug (check, sleep, re-check, unconditional append)
+that was fixed in the same change.
 
 ### 3. `eol._product_list_cache` — LOW severity
 
@@ -119,7 +108,7 @@ veripak currently enforces anything.
 | Repology | ~1 req/sec (strict) | None |
 | endoflife.date | Unknown, moderate | None |
 | OSV.dev | ~100 req/min | `time.sleep(0.1)` between calls |
-| NVD | 5 req/10s (no key), 50 req/30s (with key) | Sliding-window enforcer (no lock — see above) |
+| NVD | 5 req/10s (no key), 50 req/30s (with key) | Sliding-window enforcer (thread-safe) |
 | Tavily | Varies by plan (~1–5 req/sec) | Exponential backoff on HTTP 429 (up to 6 retries) |
 | Anthropic / OpenAI / Ollama / vLLM | Tier-dependent | None — SDKs handle retries internally |
 
@@ -163,9 +152,10 @@ New test categories needed specifically for batch:
 
 The work decomposes naturally into three sequential PRs, each independently mergeable.
 
-**PR 1 — Prep (concurrency fixes).** Scope `_usage_records` per-run, add a lock to the NVD
-rate limiter, and warm `_product_list_cache` before spawning threads. These are standalone
-correctness improvements that change no observable behavior and carry low review risk.
+**PR 1 — Prep (concurrency fixes).** ~~Scope `_usage_records` per-run,~~ ~~add a lock to the NVD
+rate limiter,~~ and warm `_product_list_cache` before spawning threads. The NVD lock and
+`_usage_records` lock are already merged (8c1926c, d20db50). Remaining: cache warming and
+scoping usage tracking per-run if needed.
 
 **PR 2 — Batch engine and CLI.** Add the `--from` flag, parallel execution with configurable
 concurrency, progress output, and partial failure handling. No MCP changes in this PR. This

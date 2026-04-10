@@ -192,5 +192,14 @@ between tool calls and text responses. The existing defensive JSON parsing (fenc
 regex extraction, fallback dicts) remains as a safety net. If a backend rejects
 `response_format`, the call retries without it.
 
+**Summary deterministic merge** — after the LLM summary returns, `summarize.py` runs a
+deterministic merge pass that fills null fields from raw audit data: CVE counts, EOL
+status/date, version numbers, and urgency (via `compute_urgency_floor()`). LLM values
+always win; deterministic values only fill holes. The `_gaps` list is recomputed after all
+fills and should only contain fields where data was genuinely unavailable. Consumers of
+veripak output (e.g. a `discover` skill) can expect all 13 summary schema fields to be
+populated for successful audits. Defensive null-checks are still recommended but should
+rarely fire.
+
 **Verbose flag** — debug fields (`_agent`, `_usage`) are filtered at the CLI layer, not
 in the pipeline. The MCP server has its own filtering. The pipeline always computes them.
