@@ -1,9 +1,9 @@
-# Retrospective: JSON Response Format Enforcement + Batch Processing Research
+# Retrospective: JSON Response Format Enforcement + v0.6.0 Release
 
 **Date:** 2026-04-09
-**Effort:** Implement issue #1 (json_mode), research issue #2 (batch processing)
+**Effort:** Implement issue #1, research issue #2, release v0.6.0
 **Issues:** #1 (closed), #2 (researched, deferred), #23 (follow-up created)
-**Commits:** fc44f58, 8c07361
+**Commits:** fc44f58, 8c07361, 611988b, 618bd5d, 7f103b0 (tag: v0.6.0)
 
 ## What We Set Out To Do
 
@@ -27,6 +27,8 @@ Two items from the backlog:
 - All 181 tests passed after implementation with zero regressions.
 - Batch processing research caught two real bugs before they could cause production issues: `_nvd_request_times` rate limiter has no thread lock, and `_usage_records` gets wiped mid-flight by concurrent runs.
 - Smoke test against live Anthropic backend confirmed the feature works end-to-end.
+- Release v0.6.0 went cleanly: all pre-flight checks passed, CI green first try, PyPI publish succeeded.
+- `llms-full.txt` regeneration automatically picked up CLAUDE.md and README changes.
 
 ## Gaps Identified
 
@@ -47,4 +49,4 @@ Two items from the backlog:
 
 **Continue:** Research-first for large features. The batch processing analysis saved us from shipping concurrency bugs.
 
-**Start:** Run a live smoke test as part of the implementation workflow, not just unit tests with mocks.
+**Start:** Run a live smoke test as part of the implementation workflow, not just unit tests with mocks. The `/create-release` workflow runs unit tests but not live integration — smoke tests are the only gate for API-level issues.
