@@ -2,6 +2,7 @@
 
 import json
 import re
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -288,21 +289,23 @@ _NVD_BASE = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 _NVD_MAX_RETRIES = 3
 
 # Module-level request-time ring for rate limiting
+_nvd_lock = threading.Lock()
 _nvd_request_times: list[float] = []
 
 
 def _nvd_rate_limit(api_key: str) -> None:
     """Block until NVD rate limit allows another request."""
     max_req, window = (50, 30.0) if api_key else (5, 10.0)
-    now = time.time()
-    _nvd_request_times[:] = [t for t in _nvd_request_times if now - t < window]
-    if len(_nvd_request_times) >= max_req:
-        sleep_until = _nvd_request_times[0] + window
-        wait = max(0.0, sleep_until - now) + 0.1
+    while True:
+        with _nvd_lock:
+            now = time.time()
+            _nvd_request_times[:] = [t for t in _nvd_request_times if now - t < window]
+            if len(_nvd_request_times) < max_req:
+                _nvd_request_times.append(now)
+                return
+            sleep_until = _nvd_request_times[0] + window
+            wait = max(0.0, sleep_until - now) + 0.1
         time.sleep(wait)
-        now = time.time()
-        _nvd_request_times[:] = [t for t in _nvd_request_times if now - t < window]
-    _nvd_request_times.append(time.time())
 
 
 def _nvd_fetch(keyword: str, api_key: str) -> list[dict]:
