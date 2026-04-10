@@ -222,6 +222,7 @@ Note: if a package name exists in multiple ecosystems (e.g., `jsoup` on both PyP
 | `TAVILY_API_KEY` | Recommended | Web search for non-registry ecosystems (c, cpp, system). Not strictly required for registry-based ecosystems. [Get a key](https://app.tavily.com/home) (free tier: 1,000 requests/month). |
 | `NVD_API_KEY` | Recommended | CVE lookups via the National Vulnerability Database. Without a key, rate limits are 5 requests per 30 seconds; with one, 50 per 30 seconds. [Request a key](https://nvd.nist.gov/developers/request-an-api-key) (free, instant via email). |
 | `ANTHROPIC_API_KEY` | CLI only | LLM calls via the Anthropic SDK for the agent pipeline. Not needed when using the MCP server. |
+| `OPENAI_API_KEY` | CLI only | LLM calls via the OpenAI SDK (when using the `openai` or `vllm` backend). Not needed when using the MCP server. |
 
 Keys are resolved in this order: environment variables (highest priority), then `~/.config/veripak/config.json`, then `.env` in the project root.
 
@@ -365,6 +366,11 @@ python -m build
 Line length limit: 100 (ruff). Rule sets: E, W, F, I, B, C4, UP.
 
 ## Changelog
+
+### 0.6.1
+
+- **Thread-safe NVD rate limiter**: the sliding-window rate limiter for NVD API requests is now guarded by a `threading.Lock`, fixing a race condition that could defeat rate limiting under concurrent use
+- **Deterministic summary fallback**: after the LLM summary returns, null fields are now filled from raw audit data (CVE counts, EOL status/date, versions, urgency), eliminating most `_gaps` entries for successful audits
 
 ### 0.6.0
 
