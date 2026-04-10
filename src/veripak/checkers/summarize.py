@@ -461,11 +461,55 @@ def generate_summary(
                 summary["breaking_change_likely"] = precomputed["breaking_change_likely"]
             if summary.get("version_gap") is None:
                 summary["version_gap"] = precomputed["version_gap"]
-            # Remove now-filled fields from _gaps
-            if "_gaps" in summary:
-                summary["_gaps"] = [g for g in summary["_gaps"] if summary.get(g) is None]
-                if not summary["_gaps"]:
-                    del summary["_gaps"]
+
+        # Deterministic merge: fill remaining null fields directly from audit data
+        eol_data = result.get("eol") or {}
+        cve_data = result.get("cves") or {}
+
+        if summary.get("total_distinct_cves") is None:
+            total = cve_data.get("total_count")
+            if total is not None:
+                summary["total_distinct_cves"] = total
+
+        if summary.get("high_or_critical_count") is None:
+            hc = cve_data.get("high_critical_count")
+            if hc is not None:
+                summary["high_or_critical_count"] = hc
+
+        if summary.get("eol") is None and eol_data.get("eol") is not None:
+            summary["eol"] = eol_data["eol"]
+
+        if summary.get("eol_date") is None and eol_data.get("eol_date") is not None:
+            summary["eol_date"] = eol_data["eol_date"]
+
+        if summary.get("version_in_use") is None and ver_in_use and ver_in_use != "unknown":
+            summary["version_in_use"] = ver_in_use
+
+        if summary.get("latest_version") is None and latest and latest != "unknown":
+            summary["latest_version"] = latest
+
+        if summary.get("urgency") is None:
+            total_cves = summary.get("total_distinct_cves") or 0
+            hc_count = summary.get("high_or_critical_count") or 0
+            cve_list = cve_data.get("versions_cves", [])
+            has_critical = any(
+                (c.get("severity") or "").upper() == "CRITICAL"
+                for c in cve_list
+            ) or (not cve_list and hc_count > 0)
+            summary["urgency"] = compute_urgency_floor(
+                eol=summary.get("eol"),
+                high_critical_count=hc_count,
+                total_cves=total_cves,
+                migration_complexity=summary.get("migration_complexity") or "unknown",
+                has_critical=has_critical,
+            )
+
+        # Recompute _gaps after all deterministic fills
+        gaps = [k for k in SUMMARY_SCHEMA if summary.get(k) is None]
+        if gaps:
+            summary["_gaps"] = gaps
+        elif "_gaps" in summary:
+            del summary["_gaps"]
 
         return summary
     except Exception as exc:
