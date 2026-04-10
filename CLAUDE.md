@@ -183,5 +183,14 @@ without an explicit `--ecosystem` flag.
 fallback when endoflife.date has no data. Uses last release date from PyPI/npm/Maven/Go
 with thresholds: <1y active, 1-3y maintenance, >3y possibly_eol.
 
+**JSON response format enforcement** — `model_caller.py` accepts a `json_mode` parameter on
+`call_model()` and `call_model_chat()`. For OpenAI-compatible backends this passes
+`response_format={"type": "json_object"}`; for Anthropic it uses assistant prefill with `{`.
+Only non-tool-use calls that expect JSON output set `json_mode=True`. Tool-use loops
+(agent main loops, summarize analysis) do NOT use json_mode because the model needs to choose
+between tool calls and text responses. The existing defensive JSON parsing (fence stripping,
+regex extraction, fallback dicts) remains as a safety net. If a backend rejects
+`response_format`, the call retries without it.
+
 **Verbose flag** — debug fields (`_agent`, `_usage`) are filtered at the CLI layer, not
 in the pipeline. The MCP server has its own filtering. The pipeline always computes them.

@@ -366,6 +366,11 @@ Line length limit: 100 (ruff). Rule sets: E, W, F, I, B, C4, UP.
 
 ## Changelog
 
+### 0.6.0
+
+- **JSON response format enforcement**: LLM calls that expect JSON output now use API-level enforcement (`response_format` for OpenAI-compatible backends, assistant prefill for Anthropic), with graceful fallback for backends that don't support it
+- **Documentation reorganized**: docs, research, and planning directories restructured; docs index and llms.txt added
+
 ### 0.5.0
 
 - **CVE cross-validation**: LLM-sourced CVE IDs are now verified against OSV.dev and NVD before inclusion in results; unverified CVEs are dropped with a HITL flag
