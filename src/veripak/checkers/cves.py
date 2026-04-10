@@ -629,7 +629,7 @@ def _filter_no_cpe_via_model(
     )
 
     try:
-        raw = model_caller.call_model(prompt).strip()
+        raw = model_caller.call_model(prompt, json_mode=True).strip()
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):
@@ -685,7 +685,7 @@ def _discover_security_advisory_cves(name: str, versions: list[str]) -> list[dic
     )
 
     try:
-        raw = model_caller.call_model(prompt).strip()
+        raw = model_caller.call_model(prompt, json_mode=True).strip()
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):

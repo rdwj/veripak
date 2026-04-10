@@ -773,7 +773,7 @@ def _check_tavily_eol(
     )
 
     try:
-        raw = model_caller.call_model(prompt)
+        raw = model_caller.call_model(prompt, json_mode=True)
         # Parse JSON response
         raw = raw.strip()
         if raw.startswith("```"):

@@ -625,7 +625,7 @@ def check_via_model(
     prompt += ecosystem_hint
 
     try:
-        raw = model_caller.call_model(prompt)
+        raw = model_caller.call_model(prompt, json_mode=True)
     except Exception as exc:
         return None, "", None, str(exc)
 

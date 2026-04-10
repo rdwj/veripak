@@ -193,7 +193,7 @@ def _validate_via_model(
     )
 
     try:
-        raw = model_caller.call_model(prompt)
+        raw = model_caller.call_model(prompt, json_mode=True)
     except Exception as exc:
         return None, f"model_caller error: {exc}", None
 

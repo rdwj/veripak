@@ -1,8 +1,8 @@
 """OpenAI + Anthropic SDK wrapper: primary backend from config, Anthropic fallback.
 
 Public API:
-    call_model(prompt: str, system: str = "") -> str
-    call_model_chat(messages: list, tools: list | None = None)
+    call_model(prompt: str, system: str = "", json_mode: bool = False) -> str
+    call_model_chat(messages: list, tools: list | None = None, json_mode: bool = False)
     reset_usage() -> None
     get_usage_summary() -> dict
 """
@@ -341,24 +341,47 @@ def _anthropic_response_to_openai(response) -> SimpleNamespace:
 # Primary call helpers
 # ---------------------------------------------------------------------------
 
+def _is_response_format_error(exc: Exception) -> bool:
+    """Check if an exception is caused by a backend rejecting response_format."""
+    msg = str(exc).lower()
+    return any(t in msg for t in ("response_format", "json_object", "json_mode"))
+
+
 def _call_openai(model: str, messages: list[dict], base_url: str | None,
-                 api_key: str | None, tools: list | None = None):
+                 api_key: str | None, tools: list | None = None,
+                 json_mode: bool = False):
     """Make a chat completion call via the OpenAI SDK. Returns the raw response."""
     client = _get_openai_client(base_url=base_url, api_key=api_key)
     kwargs: dict = {"model": model, "messages": messages}
     if tools:
         kwargs["tools"] = tools
         kwargs["tool_choice"] = "auto"
-    resp = client.chat.completions.create(**kwargs)
+    if json_mode and not tools:
+        kwargs["response_format"] = {"type": "json_object"}
+    try:
+        resp = client.chat.completions.create(**kwargs)
+    except Exception as exc:
+        if json_mode and "response_format" in kwargs and _is_response_format_error(exc):
+            logger.warning("Backend rejected response_format, retrying without: %s", exc)
+            del kwargs["response_format"]
+            resp = client.chat.completions.create(**kwargs)
+        else:
+            raise
     return resp
 
 
-def _call_anthropic(model: str, messages: list[dict], tools: list | None = None):
+def _call_anthropic(model: str, messages: list[dict], tools: list | None = None,
+                    json_mode: bool = False):
     """Make a messages call via the Anthropic SDK. Returns an OpenAI-shaped object."""
     api_key = _load_anthropic_key()
     client = _get_anthropic_client(api_key=api_key)
 
     system_str, anthropic_msgs = _messages_to_anthropic(messages)
+
+    prefilled = False
+    if json_mode and not tools:
+        anthropic_msgs.append({"role": "assistant", "content": "{"})
+        prefilled = True
 
     kwargs: dict = {
         "model": model,
@@ -372,14 +395,17 @@ def _call_anthropic(model: str, messages: list[dict], tools: list | None = None)
 
     resp = client.messages.create(**kwargs)
     _record_usage(resp, model, is_anthropic=True)
-    return _anthropic_response_to_openai(resp)
+    result = _anthropic_response_to_openai(resp)
+    if prefilled:
+        result.content = "{" + (result.content or "")
+    return result
 
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
-def call_model(prompt: str, system: str = "") -> str:
+def call_model(prompt: str, system: str = "", json_mode: bool = False) -> str:
     """Call the configured LLM; fall back to Anthropic on failure.
 
     Raises RuntimeError if both the primary and the fallback fail.
@@ -394,11 +420,11 @@ def call_model(prompt: str, system: str = "") -> str:
     primary_error: Exception | None = None
     try:
         if backend == "anthropic":
-            result = _call_anthropic(model, messages)
+            result = _call_anthropic(model, messages, json_mode=json_mode)
             return result.content or ""
         else:
             api_key = _openai_api_key_for_backend(backend)
-            resp = _call_openai(model, messages, base_url, api_key)
+            resp = _call_openai(model, messages, base_url, api_key, json_mode=json_mode)
             _record_usage(resp, model)
             return resp.choices[0].message.content or ""
     except Exception as exc:
@@ -407,7 +433,7 @@ def call_model(prompt: str, system: str = "") -> str:
     # --- Anthropic fallback ---
     anthropic_error: Exception | None = None
     try:
-        result = _call_anthropic(_ANTHROPIC_FALLBACK_MODEL, messages)
+        result = _call_anthropic(_ANTHROPIC_FALLBACK_MODEL, messages, json_mode=json_mode)
         return result.content or ""
     except Exception as exc:
         anthropic_error = exc
@@ -419,7 +445,7 @@ def call_model(prompt: str, system: str = "") -> str:
     )
 
 
-def call_model_chat(messages: list, tools: list | None = None):
+def call_model_chat(messages: list, tools: list | None = None, json_mode: bool = False):
     """Multi-turn call returning the full message object (supports tool_calls).
 
     Falls back to Anthropic if the primary backend fails.
@@ -431,14 +457,15 @@ def call_model_chat(messages: list, tools: list | None = None):
     primary_error: Exception | None = None
     try:
         if backend == "anthropic":
-            return _call_anthropic(model, normalized, tools=tools)
+            return _call_anthropic(model, normalized, tools=tools, json_mode=json_mode)
         else:
             api_key: str | None = None
             if backend == "ollama":
                 api_key = "ollama"
             elif backend == "vllm":
                 api_key = "not-needed"
-            resp = _call_openai(model, normalized, base_url, api_key, tools=tools)
+            resp = _call_openai(model, normalized, base_url, api_key, tools=tools,
+                                json_mode=json_mode)
             _record_usage(resp, model)
             return resp.choices[0].message
     except Exception as exc:
@@ -447,7 +474,8 @@ def call_model_chat(messages: list, tools: list | None = None):
     # --- Anthropic fallback ---
     anthropic_error: Exception | None = None
     try:
-        return _call_anthropic(_ANTHROPIC_FALLBACK_MODEL, normalized, tools=tools)
+        return _call_anthropic(_ANTHROPIC_FALLBACK_MODEL, normalized, tools=tools,
+                               json_mode=json_mode)
     except Exception as exc:
         anthropic_error = exc
 

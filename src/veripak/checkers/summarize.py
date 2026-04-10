@@ -253,7 +253,7 @@ def _run_schema_mapping(analysis: str) -> dict:
         {"role": "system", "content": _SYSTEM_SCHEMA},
         {"role": "user", "content": prompt},
     ]
-    msg = model_caller.call_model_chat(messages, tools=None)
+    msg = model_caller.call_model_chat(messages, tools=None, json_mode=True)
     raw = _strip_fences((msg.content or "").strip())
 
     try:
@@ -305,7 +305,7 @@ def _run_schema_mapping(analysis: str) -> dict:
             {"role": "system", "content": _SYSTEM_SCHEMA},
             {"role": "user", "content": retry_prompt},
         ]
-        retry_msg = model_caller.call_model_chat(retry_messages, tools=None)
+        retry_msg = model_caller.call_model_chat(retry_messages, tools=None, json_mode=True)
         retry_raw = _strip_fences((retry_msg.content or "").strip())
         try:
             retry_result = json.loads(retry_raw)
