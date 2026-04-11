@@ -340,9 +340,13 @@ def check_maven(name: str, versions_in_use: list[str] | None = None) -> tuple[st
     )
     data = _http_get_json(url)
     version = None
+    resolved_g = None
+    resolved_a = None
     if data:
         docs = data.get("response", {}).get("docs", [])
         if docs:
+            resolved_g = docs[0].get("g")
+            resolved_a = docs[0].get("a")
             version = docs[0].get("latestVersion")
 
     if not version:
@@ -354,7 +358,21 @@ def check_maven(name: str, versions_in_use: list[str] | None = None) -> tuple[st
         if data:
             docs = data.get("response", {}).get("docs", [])
             if docs:
+                resolved_g = docs[0].get("g")
+                resolved_a = docs[0].get("a")
                 version = docs[0].get("latestVersion")
+
+    # Re-query via maven-metadata.xml for canonical version when we
+    # resolved coordinates from the Solr search.
+    if resolved_g and resolved_a:
+        canonical = _maven_metadata_version(resolved_g, resolved_a)
+        if canonical:
+            version = canonical
+            url = (
+                f"https://repo1.maven.org/maven2/"
+                f"{resolved_g.replace('.', '/')}/{resolved_a}"
+                f"/maven-metadata.xml"
+            )
 
     notes = (
         "pre-release version" if version and is_prerelease(version)

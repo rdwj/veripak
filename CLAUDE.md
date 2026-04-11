@@ -172,8 +172,11 @@ CVEs are dropped (not downgraded) and a HITL flag is emitted. This prevents hall
 CVE IDs from smaller models from reaching the output.
 
 **Maven metadata XML** — `checkers/versions.py` prefers `maven-metadata.xml` from the
-Maven Central repository over the Solr search endpoint for coordinate-format lookups
-(`groupId:artifactId`). The search endpoint can return stale `latestVersion` data.
+Maven Central repository over the Solr search endpoint. This applies to both coordinate-format
+lookups (`groupId:artifactId`) and bare artifact names: when a bare name like `jsoup` falls
+through to the Solr artifact-name search, the code extracts the resolved `groupId` and
+`artifactId` from the Solr response and re-queries via `_maven_metadata_version()` for the
+canonical version. This ensures `jsoup` and `org.jsoup:jsoup` converge on the same data source.
 
 **Ecosystem ambiguity** — `checkers/ecosystem.py` has `detect_ecosystem_ambiguity()` that
 probes all registries. The CLI refuses to proceed when a package exists in 2+ ecosystems
@@ -195,10 +198,12 @@ regex extraction, fallback dicts) remains as a safety net. If a backend rejects
 **Summary deterministic merge** — after the LLM summary returns, `summarize.py` runs a
 deterministic merge pass that fills null fields from raw audit data: CVE counts, EOL
 status/date, version numbers, and urgency (via `compute_urgency_floor()`). LLM values
-always win; deterministic values only fill holes. The `_gaps` list is recomputed after all
-fills and should only contain fields where data was genuinely unavailable. Consumers of
-veripak output (e.g. a `discover` skill) can expect all 13 summary schema fields to be
-populated for successful audits. Defensive null-checks are still recommended but should
+always win; deterministic values only fill holes. After the merge, an **urgency ceiling**
+caps urgency at `medium` when `total_distinct_cves == 0` and `eol` is not confirmed `True`.
+This prevents the LLM from escalating to `high`/`immediate` based on uncertain signals
+alone. The `_gaps` list is recomputed after all fills. Legitimately nullable fields are:
+`eol_date`, `version_gap`, `upgrade_path`, and `recommendation` — all other fields should
+be populated for successful audits. Defensive null-checks are still recommended but should
 rarely fire.
 
 **Verbose flag** — debug fields (`_agent`, `_usage`) are filtered at the CLI layer, not

@@ -367,6 +367,12 @@ Line length limit: 100 (ruff). Rule sets: E, W, F, I, B, C4, UP.
 
 ## Changelog
 
+### 0.6.2
+
+- **Urgency ceiling for 0-CVE packages**: the summary now caps urgency at `medium` when a package has zero CVEs and EOL is not confirmed, preventing the LLM from escalating to `high`/`immediate` based on uncertain signals alone
+- **Java version convergence**: bare artifact names (e.g. `jsoup`) now resolve through `maven-metadata.xml` instead of relying solely on the Solr search endpoint, ensuring they return the same version as their coordinate form (`org.jsoup:jsoup`)
+- **Sparse fields contract**: documented the four legitimately nullable summary fields (`eol_date`, `version_gap`, `upgrade_path`, `recommendation`) so downstream consumers know what to null-check vs what indicates missing data
+
 ### 0.6.1
 
 - **Thread-safe NVD rate limiter**: the sliding-window rate limiter for NVD API requests is now guarded by a `threading.Lock`, fixing a race condition that could defeat rate limiting under concurrent use

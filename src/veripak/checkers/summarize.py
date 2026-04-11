@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .. import model_caller
 from .. import tavily as tavily_client
-from .migration import compute_migration_complexity, compute_urgency_floor
+from .migration import _URGENCY_ORDER, compute_migration_complexity, compute_urgency_floor
 
 log = logging.getLogger(__name__)
 
@@ -504,7 +504,26 @@ def generate_summary(
                 has_critical=has_critical,
             )
 
-        # Recompute _gaps after all deterministic fills
+        # Urgency ceiling: cap at "medium" when there are no CVEs and EOL is not confirmed.
+        # The LLM may escalate to "high"/"immediate" based on uncertain signals (e.g. EOL
+        # uncertainty, version staleness), but that level of urgency with zero CVEs is
+        # misleading for consumers of this output.
+        _ceil_cves = summary.get("total_distinct_cves") or 0
+        _ceil_eol = summary.get("eol") is True
+        if _ceil_cves == 0 and not _ceil_eol:
+            _urg = (summary.get("urgency") or "low").lower()
+            if _URGENCY_ORDER.get(_urg, 0) > _URGENCY_ORDER["medium"]:
+                summary["urgency"] = "medium"
+
+        # Recompute _gaps after all deterministic fills.
+        # Legitimately nullable fields after a successful audit:
+        #   eol_date        — not all ecosystems publish EOL dates
+        #   version_gap     — requires both version_in_use and latest_version
+        #   upgrade_path    — LLM-only; no deterministic fallback
+        #   recommendation  — LLM-only; no deterministic fallback
+        # All other fields should be populated; if they appear in _gaps,
+        # the audit data was genuinely unavailable.  Consumers should
+        # null-check all fields but can treat the above four as expected gaps.
         gaps = [k for k in SUMMARY_SCHEMA if summary.get(k) is None]
         if gaps:
             summary["_gaps"] = gaps
