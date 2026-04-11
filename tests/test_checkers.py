@@ -24,6 +24,7 @@ from veripak.checkers.eol import (
     check_eol,
     check_eol_heuristic,
 )
+from veripak.checkers.migration import _URGENCY_ORDER, compute_urgency_floor
 from veripak.checkers.versions import (
     _maven_metadata_version,
     _parse_json_response,
@@ -1003,6 +1004,56 @@ def test_check_maven_prerelease_noted():
     assert notes == "pre-release version"
 
 
+def test_check_maven_bare_name_resolves_via_metadata():
+    """Bare artifact name should re-query maven-metadata.xml using coordinates from Solr."""
+    solr_response = {
+        "response": {
+            "docs": [{"g": "org.jsoup", "a": "jsoup", "latestVersion": "1.21.1"}],
+        },
+    }
+
+    def mock_http_get_json(url):
+        if "solrsearch" in url:
+            return solr_response
+        return None
+
+    with patch("veripak.checkers.versions._http_get_json", side_effect=mock_http_get_json), \
+         patch("veripak.checkers.versions._maven_metadata_version", return_value="1.22.1") as mock_meta:
+        version, url, notes = check_maven("jsoup")
+
+    # Should have called _maven_metadata_version with resolved coordinates
+    mock_meta.assert_called_once_with("org.jsoup", "jsoup")
+    # Should return the canonical version from metadata, not Solr's stale one
+    assert version == "1.22.1", f"Expected canonical '1.22.1', got {version!r}"
+    # URL should point to maven-metadata.xml, not Solr
+    assert "maven-metadata.xml" in url, (
+        f"Expected metadata URL after coordinate resolution, got {url!r}"
+    )
+
+
+def test_check_maven_bare_name_falls_back_to_solr_when_metadata_fails():
+    """When metadata.xml returns None for resolved coordinates, keep the Solr version."""
+    solr_response = {
+        "response": {
+            "docs": [{"g": "org.jsoup", "a": "jsoup", "latestVersion": "1.21.1"}],
+        },
+    }
+
+    def mock_http_get_json(url):
+        if "solrsearch" in url:
+            return solr_response
+        return None
+
+    with patch("veripak.checkers.versions._http_get_json", side_effect=mock_http_get_json), \
+         patch("veripak.checkers.versions._maven_metadata_version", return_value=None):
+        version, url, notes = check_maven("jsoup")
+
+    assert version == "1.21.1", f"Expected Solr fallback '1.21.1', got {version!r}"
+    assert "solrsearch" in url, (
+        f"Expected Solr URL when metadata returns None, got {url!r}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # validate_cve_ids
 # ---------------------------------------------------------------------------
@@ -1283,3 +1334,103 @@ def test_eol_heuristic_api_failure():
     assert result["eol"] is None
     assert result["last_release_date"] is None
     assert "Could not retrieve" in result["notes"]
+
+
+# ---------------------------------------------------------------------------
+# compute_urgency_floor — base cases
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("eol, hc_count, total_cves, complexity, has_critical, expected", [
+    # EOL confirmed, 0 CVEs -> "high" (ceiling does NOT apply because eol=True)
+    (True, 0, 0, "unknown", False, "high"),
+    # EOL confirmed + HIGH/CRITICAL CVEs -> "immediate"
+    (True, 1, 1, "unknown", False, "immediate"),
+    # Not EOL, 0 CVEs -> "low" (ceiling irrelevant, already low)
+    (False, 0, 0, "unknown", False, "low"),
+    # Not EOL, has HIGH CVEs -> "medium"
+    (False, 1, 1, "unknown", False, "medium"),
+    # Not EOL, critical CVE flag -> "high"
+    (False, 0, 1, "unknown", True, "high"),
+    # EOL=None (uncertain), 0 CVEs -> "low" (floor says low, ceiling irrelevant)
+    (None, 0, 0, "unknown", False, "low"),
+    # Major version gap, 0 CVEs -> "medium"
+    (False, 0, 0, "major", False, "medium"),
+    # Rewrite complexity, 0 CVEs -> "medium"
+    (False, 0, 0, "rewrite", False, "medium"),
+    # Patch complexity, 0 CVEs -> "low"
+    (False, 0, 0, "patch", False, "low"),
+])
+def test_compute_urgency_floor(eol, hc_count, total_cves, complexity, has_critical, expected):
+    result = compute_urgency_floor(eol, hc_count, total_cves, complexity, has_critical)
+    assert result == expected, (
+        f"urgency_floor({eol=}, {hc_count=}, {total_cves=}, {complexity=}, {has_critical=}) "
+        f"= {result!r}, expected {expected!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Urgency ceiling — logic mirrored from summarize.py
+# ---------------------------------------------------------------------------
+
+
+def _apply_urgency_ceiling(summary: dict) -> dict:
+    """Apply the same ceiling rule that summarize.py uses.
+
+    Caps urgency at 'medium' when total_distinct_cves == 0 and eol is not True.
+    """
+    ceil_cves = summary.get("total_distinct_cves") or 0
+    ceil_eol = summary.get("eol") is True
+    if ceil_cves == 0 and not ceil_eol:
+        urg = (summary.get("urgency") or "low").lower()
+        if _URGENCY_ORDER.get(urg, 0) > _URGENCY_ORDER["medium"]:
+            summary["urgency"] = "medium"
+    return summary
+
+
+def test_urgency_ceiling_caps_high_when_no_cves():
+    """Ceiling caps urgency at 'medium' when CVEs=0 and eol is not confirmed."""
+    summary = {"urgency": "high", "total_distinct_cves": 0, "eol": None}
+    result = _apply_urgency_ceiling(summary)
+    assert result["urgency"] == "medium", (
+        f"Urgency should be capped at 'medium' with 0 CVEs and eol=None, "
+        f"got {result['urgency']!r}"
+    )
+
+
+def test_urgency_ceiling_caps_immediate_when_no_cves():
+    """Ceiling caps 'immediate' down to 'medium' when CVEs=0 and eol is not confirmed."""
+    summary = {"urgency": "immediate", "total_distinct_cves": 0, "eol": False}
+    result = _apply_urgency_ceiling(summary)
+    assert result["urgency"] == "medium", (
+        f"Urgency should be capped at 'medium' with 0 CVEs and eol=False, "
+        f"got {result['urgency']!r}"
+    )
+
+
+def test_urgency_ceiling_does_not_cap_when_eol_confirmed():
+    """Ceiling should NOT reduce urgency when EOL is confirmed True, even with 0 CVEs."""
+    summary = {"urgency": "high", "total_distinct_cves": 0, "eol": True}
+    result = _apply_urgency_ceiling(summary)
+    assert result["urgency"] == "high", (
+        f"Urgency should remain 'high' when EOL is confirmed, got {result['urgency']!r}"
+    )
+
+
+def test_urgency_ceiling_does_not_cap_when_cves_present():
+    """Ceiling is a no-op when CVEs are present, even if eol is not confirmed."""
+    summary = {"urgency": "high", "total_distinct_cves": 3, "eol": None}
+    result = _apply_urgency_ceiling(summary)
+    assert result["urgency"] == "high", (
+        f"Urgency should remain 'high' when CVEs are present, got {result['urgency']!r}"
+    )
+
+
+@pytest.mark.parametrize("urg_val", ["low", "medium"])
+def test_urgency_ceiling_noop_when_already_medium_or_lower(urg_val):
+    """Ceiling is a no-op when urgency is already at or below 'medium'."""
+    summary = {"urgency": urg_val, "total_distinct_cves": 0, "eol": None}
+    result = _apply_urgency_ceiling(summary)
+    assert result["urgency"] == urg_val, (
+        f"Urgency {urg_val!r} should not be changed by ceiling, got {result['urgency']!r}"
+    )

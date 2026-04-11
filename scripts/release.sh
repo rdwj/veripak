@@ -87,24 +87,32 @@ if [ "$VERSION_PY" != "$VERSION" ] || [ "$VERSION_TOML" != "$VERSION" ]; then
 fi
 print_success "Version verification passed"
 
-# 4. Show the changes
-echo
-print_info "Changes to be committed:"
-git diff src/veripak/version.py pyproject.toml README.md
-echo
+# 4. Commit the changes (only if version files were actually modified)
+if git diff --quiet src/veripak/version.py pyproject.toml; then
+    print_info "Version already at $VERSION, skipping commit"
+else
+    echo
+    print_info "Changes to be committed:"
+    git diff src/veripak/version.py pyproject.toml README.md
+    echo
 
-# 5. Commit the changes
-print_info "Committing changes..."
-git add src/veripak/version.py pyproject.toml README.md
-git commit -m "$COMMIT_MSG"
-print_success "Changes committed"
+    print_info "Committing changes..."
+    git add src/veripak/version.py pyproject.toml README.md
+    git commit -m "$COMMIT_MSG"
+    print_success "Changes committed"
 
-# 6. Push to main
-print_info "Pushing to main..."
-git push origin main
-print_success "Pushed to main"
+    # 6. Push to main
+    print_info "Pushing to main..."
+    git push origin main
+    print_success "Pushed to main"
+fi
 
 # 7. Create and push tag
+if [ -n "$(git tag -l "v$VERSION")" ]; then
+    print_error "Tag v$VERSION already exists. Re-tagging is dangerous — aborting."
+    echo "If you need to re-release, delete the tag first: git tag -d v$VERSION"
+    exit 1
+fi
 print_info "Creating tag v$VERSION..."
 git tag "v$VERSION"
 print_success "Tag created"

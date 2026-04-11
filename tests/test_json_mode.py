@@ -317,7 +317,49 @@ def test_call_model_chat_threads_json_mode_to_anthropic_fallback():
 
 
 # ---------------------------------------------------------------------------
-# 9. _is_response_format_error helper
+# 9. call_model: json_mode falls back to Anthropic with prefill (issue #23)
+# ---------------------------------------------------------------------------
+
+def test_call_model_threads_json_mode_to_anthropic_fallback():
+    """call_model: when primary OpenAI backend fails, Anthropic fallback
+    should receive json_mode=True and add the assistant prefill."""
+    mock_anth_resp = _make_anthropic_response('"val": 1}')
+
+    with patch("veripak.model_caller._resolve_model",
+               return_value=("test-model", "openai", None)), \
+         patch("veripak.model_caller._load_openai_key", return_value="test-key"), \
+         patch("veripak.model_caller._get_openai_client") as mock_get_openai, \
+         patch("veripak.model_caller._load_anthropic_key", return_value="test-key"), \
+         patch("veripak.model_caller._get_anthropic_client") as mock_get_anthropic:
+
+        mock_openai_client = MagicMock()
+        mock_openai_client.chat.completions.create.side_effect = Exception("connection timeout")
+        mock_get_openai.return_value = mock_openai_client
+
+        mock_anth_client = MagicMock()
+        mock_anth_client.messages.create.return_value = mock_anth_resp
+        mock_get_anthropic.return_value = mock_anth_client
+
+        mc.call_model("test prompt", json_mode=True)
+
+    assert mock_anth_client.messages.create.called, (
+        "Anthropic client should have been called as fallback"
+    )
+
+    _, kwargs = mock_anth_client.messages.create.call_args
+    msgs = kwargs.get("messages", [])
+    assistant_prefills = [
+        m for m in msgs
+        if m.get("role") == "assistant" and m.get("content", "").strip().startswith("{")
+    ]
+    assert len(assistant_prefills) == 1, (
+        f"Expected one assistant prefill for json_mode=True, found {len(assistant_prefills)}: "
+        f"{assistant_prefills!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 10. _is_response_format_error helper
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("message, expected", [
