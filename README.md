@@ -44,6 +44,8 @@ veripak check requests --ecosystem python --versions 2.28.0 --json
 
 The `--json` path runs the full agent pipeline (including LLM calls), so it requires a configured LLM backend (`veripak config`). In exchange, you get richer analysis: the pipeline reasons about ambiguous signals, writes a security summary, and flags items for human review. The MCP server path gives raw structured data only — faster, cheaper, no LLM backend required.
 
+Both paths include a `veripak_version` field in their JSON output for provenance tracking.
+
 ## MCP setup guides
 
 ### Claude Code
@@ -366,6 +368,10 @@ python -m build
 Line length limit: 100 (ruff). Rule sets: E, W, F, I, B, C4, UP.
 
 ## Changelog
+
+### 0.6.3
+
+- **Provenance tracking**: JSON output now includes a top-level `veripak_version` field so downstream consumers can record which version produced each finding
 
 ### 0.6.2
 
