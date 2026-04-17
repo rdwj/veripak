@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 
 from .agents.base import HITLFlag
 from .checkers import download_discovery, downloads, replacements, versions
+from .version import __version__
 
 logger = logging.getLogger(__name__)
 
@@ -667,6 +668,7 @@ class PackageCheckAgent:
     def _to_result(self, state: AgentState) -> dict:
         """Assemble the final result dict from agent state."""
         result = {
+            "veripak_version": __version__,
             "package": state.package,
             "ecosystem": state.ecosystem,
             "versions_in_use": state.versions_in_use,
