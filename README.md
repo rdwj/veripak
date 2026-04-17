@@ -367,6 +367,10 @@ python -m build
 
 Line length limit: 100 (ruff). Rule sets: E, W, F, I, B, C4, UP.
 
+## License
+
+MIT — see [LICENSE](LICENSE).
+
 ## Changelog
 
 ### 0.6.3
